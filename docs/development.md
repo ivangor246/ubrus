@@ -4,7 +4,7 @@ Build on Ubuntu 24.04 amd64 for compatibility with Ubuntu 24.04 and 26.04. Insta
 
 ```sh
 sudo apt install build-essential pkg-config libgtk-4-dev libgstreamer-plugins-base1.0-dev libdrm-dev libx11-dev \
-  gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-gl webp-pixbuf-loader \
+  gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-gl librsvg2-common webp-pixbuf-loader \
   python3 python3-yaml unzip desktop-file-utils appstream
 ```
 
@@ -19,4 +19,6 @@ Use the root Makefile to serialize Cargo and keep compilation to one job. The Sn
 
 For the module layout and wallpaper protocol, see [Architecture](architecture.md). For test commands and package checks, see [Tests](../tests/README.md).
 
-Before a public release, add a homepage to the AppStream metadata, register the Snap name and request the session D-Bus slot declaration. Verify the signed candidate with its extension, capture screenshots, and check upgrades, login, lock, suspend and physical monitor changes on the target GPU.
+Before a public release, register the Snap name and request the session D-Bus slot declaration. Verify the signed candidate with its extension, capture screenshots, and check upgrades, login, lock, suspend and physical monitor changes on the target GPU.
+
+The window and panel share the English and Russian strings in `extension/locale.json`. Add matching keys in every catalog and register additional languages in the preferences language selector and system-locale matcher. The extension package fingerprints its sources, icons and translations so the running window can identify an installed Shell update.

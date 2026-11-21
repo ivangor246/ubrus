@@ -14,6 +14,7 @@ use std::{
 
 struct GstVideo {
     pipeline: VideoPipeline,
+    speed: u16,
     sink: gst::Element,
     pub paintable: gdk::Paintable,
     decoder: Arc<Mutex<String>>,
@@ -29,7 +30,7 @@ struct Playback {
 }
 
 impl GstVideo {
-    pub fn new(path: &Path, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
+    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
         let sink = gst::ElementFactory::make("gtk4paintablesink").build()?;
         let paintable = sink.property::<gdk::Paintable>("paintable");
         let output = if paintable.property::<Option<gdk::GLContext>>("gl-context").is_some() {
@@ -76,15 +77,17 @@ impl GstVideo {
                         gst::MessageView::Eos(_) => {
                             if !requested.active.get() {
                                 requested.at_end.set(true);
-                            } else if let Err(e) =
-                                p.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::ZERO)
-                            {
-                                notice(Err(e.into()));
+                            } else if let Err(e) = super::seek_start(&p, speed) {
+                                notice(Err(e));
                             }
                         }
                         gst::MessageView::AsyncDone(_) if !ready => {
                             ready = true;
-                            notice(Ok(()));
+                            notice(if speed == 100 {
+                                Ok(())
+                            } else {
+                                super::seek_start(&p, speed)
+                            });
                         }
                         gst::MessageView::Error(e) => notice(Err(anyhow::anyhow!("{}", e.error()))),
                         _ => {}
@@ -95,6 +98,7 @@ impl GstVideo {
         pipeline.set_state(gst::State::Paused)?;
         Ok(Self {
             pipeline,
+            speed,
             sink,
             paintable,
             decoder,
@@ -108,8 +112,7 @@ impl GstVideo {
             return Ok(());
         }
         if active && self.playback.at_end.get() {
-            self.pipeline
-                .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::ZERO)?;
+            super::seek_start(&self.pipeline, self.speed)?;
             self.playback.at_end.set(false);
         }
         self.pipeline.set_state(if active {
@@ -140,9 +143,9 @@ pub struct Video {
     backend: Backend,
 }
 impl Video {
-    pub fn new(path: &Path, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
-        if path.extension().is_some_and(|ext| ext == "gif") {
-            let gif = Gif::open(path)?;
+    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
+        if path.extension().is_some_and(|ext| ext == "gif" || ext == "webp") {
+            let gif = Gif::open(path, speed)?;
             let paintable = gif.frames.clone().upcast();
             glib::idle_add_local_once(move || notice(Ok(())));
             Ok(Self {
@@ -150,7 +153,7 @@ impl Video {
                 backend: Backend::Gif(gif),
             })
         } else {
-            let stream = GstVideo::new(path, notice)?;
+            let stream = GstVideo::new(path, speed, notice)?;
             Ok(Self {
                 paintable: stream.paintable.clone(),
                 backend: Backend::Stream(stream),
@@ -170,7 +173,7 @@ impl Video {
         match &self.backend {
             Backend::Stream(stream) => stream.stats(),
             Backend::Gif(g) => {
-                serde_json::json!({"decoder":"GdkPixbuf GIF","playing":g.is_playing(),"paused":!g.is_playing(),"decoded":g.decoded.get(),"rendered":g.decoded.get(),"dropped":0})
+                serde_json::json!({"decoder":"GdkPixbuf GIF/WebP","playing":g.is_playing(),"paused":!g.is_playing(),"decoded":g.decoded.get(),"rendered":g.decoded.get(),"dropped":0})
             }
         }
     }

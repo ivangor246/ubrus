@@ -16,25 +16,31 @@ pub type Frame = Result<Handle, String>;
 
 // Dropping the sender wakes the GIF timer. Video checks for cancellation at least every 100 ms.
 pub struct Playback {
-    _stop: mpsc::Sender<()>,
+    rate: mpsc::Sender<u16>,
     pub frames: async_channel::Receiver<Frame>,
 }
 
-pub fn start(path: PathBuf, gif: bool) -> Playback {
+impl Playback {
+    pub fn set_speed(&self, speed: u16) {
+        let _ = self.rate.send(speed);
+    }
+}
+
+pub fn start(path: PathBuf, gif: bool, speed: u16) -> Playback {
     let (stop, cancel) = mpsc::channel();
     let (frames, received) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = if gif {
-            play_gif(&path, &cancel, &frames)
+            play_gif(&path, &cancel, &frames, speed)
         } else {
-            play_video(&path, &cancel, &frames)
+            play_video(&path, &cancel, &frames, speed)
         };
         if let Err(e) = result {
             let _ = frames.send_blocking(Err(format!("{e:#}")));
         }
     });
     Playback {
-        _stop: stop,
+        rate: stop,
         frames: received,
     }
 }
@@ -57,9 +63,12 @@ fn rgba(width: u32, height: u32, stride: i32, pixels: &[u8]) -> Result<Handle> {
     Ok(Handle::from_rgba(width, height, packed))
 }
 
-fn play_gif(path: &Path, cancel: &mpsc::Receiver<()>, frames: &Sender<Frame>) -> Result<()> {
+fn play_gif(path: &Path, cancel: &mpsc::Receiver<u16>, frames: &Sender<Frame>, speed: u16) -> Result<()> {
     let animation = PixbufAnimation::from_file(path)?;
-    let mut iter = animation.iter(Some(SystemTime::now()));
+    let mut last = std::time::Instant::now();
+    let mut elapsed = Duration::ZERO;
+    let mut rate = f64::from(speed) / 100.;
+    let mut iter = animation.iter(Some(SystemTime::UNIX_EPOCH));
     loop {
         if !frames.is_full() {
             let p = iter.pixbuf();
@@ -86,25 +95,29 @@ fn play_gif(path: &Path, cancel: &mpsc::Receiver<()>, frames: &Sender<Frame>) ->
         if animation.is_static_image() {
             return Ok(());
         }
-        if !matches!(
-            cancel.recv_timeout(
-                delay
-                    .unwrap_or(Duration::from_millis(20))
-                    .max(Duration::from_millis(10))
-            ),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ) {
-            return Ok(());
+        let wait = delay
+            .unwrap_or(Duration::from_millis(20))
+            .div_f64(rate)
+            .max(Duration::from_millis(1));
+        let next = cancel.recv_timeout(wait.saturating_sub(last.elapsed()));
+        let now = std::time::Instant::now();
+        elapsed += now.duration_since(last).mul_f64(rate);
+        last = now;
+        match next {
+            Ok(speed) => rate = f64::from(cancel.try_iter().last().unwrap_or(speed)) / 100.,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if delay.is_none() {
-            iter = animation.iter(Some(SystemTime::now()));
+            elapsed = Duration::ZERO;
+            iter = animation.iter(Some(SystemTime::UNIX_EPOCH));
         } else {
-            iter.advance(SystemTime::now());
+            iter.advance(SystemTime::UNIX_EPOCH + elapsed);
         }
     }
 }
 
-fn play_video(path: &Path, cancel: &mpsc::Receiver<()>, frames: &Sender<Frame>) -> Result<()> {
+fn play_video(path: &Path, cancel: &mpsc::Receiver<u16>, frames: &Sender<Frame>, speed: u16) -> Result<()> {
     gst::init()?;
     let bin = gst::parse::bin_from_description(
         "videoconvert ! videoscale ! video/x-raw,format=RGBA,width=(int)[1,640],height=(int)[1,360],pixel-aspect-ratio=1/1 ! appsink name=frames max-buffers=1 drop=true",
@@ -113,8 +126,25 @@ fn play_video(path: &Path, cancel: &mpsc::Receiver<()>, frames: &Sender<Frame>) 
     let sink = bin.by_name("frames").unwrap().downcast::<gst_app::AppSink>().unwrap();
     let player = crate::media::VideoPipeline::open(path, bin.upcast_ref())?;
     let bus = player.bus().context("No playback bus")?;
+    if speed != 100 {
+        player.set_state(gst::State::Paused)?;
+        player.state(gst::ClockTime::from_seconds(8)).0?;
+        crate::media::seek_start(&player, speed)?;
+    }
     player.set_state(gst::State::Playing)?;
-    while matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+    let mut speed = speed;
+    loop {
+        match cancel.try_recv() {
+            Ok(rate) => {
+                speed = cancel.try_iter().last().unwrap_or(rate);
+                let position = player
+                    .query_position::<gst::ClockTime>()
+                    .unwrap_or(gst::ClockTime::ZERO);
+                crate::media::seek_at(&player, speed, position)?;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
         if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(100))
             && !frames.is_full()
         {
@@ -136,7 +166,7 @@ fn play_video(path: &Path, cancel: &mpsc::Receiver<()>, frames: &Sender<Frame>) 
             match message.view() {
                 gst::MessageView::Error(e) => bail!("{}", e.error()),
                 gst::MessageView::Eos(_) => {
-                    player.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::ZERO)?;
+                    crate::media::seek_start(&player, speed)?;
                 }
                 _ => {}
             }

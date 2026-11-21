@@ -5,6 +5,7 @@ use crate::media;
 fn deleting_global_still_restores_the_desktop_and_keeps_per_monitor_overrides() -> Result<()> {
     let mut p = Profile::default();
     let item = Item {
+        motion: None,
         name: "photo".into(),
         ext: "png".into(),
     };
@@ -13,6 +14,7 @@ fn deleting_global_still_restores_the_desktop_and_keeps_per_monitor_overrides() 
     p.assign(
         ALL,
         Choice {
+            frame: Default::default(),
             id: "global".into(),
             fit: false,
         },
@@ -20,6 +22,7 @@ fn deleting_global_still_restores_the_desktop_and_keeps_per_monitor_overrides() 
     p.assign(
         "left",
         Choice {
+            frame: Default::default(),
             id: "override".into(),
             fit: true,
         },
@@ -49,6 +52,7 @@ fn deleting_an_active_item_preserves_other_outputs_and_retries_file_cleanup() ->
     p.assign(
         ALL,
         Choice {
+            frame: Default::default(),
             id: id.clone(),
             fit: false,
         },
@@ -56,6 +60,7 @@ fn deleting_an_active_item_preserves_other_outputs_and_retries_file_cleanup() ->
     p.assign(
         "HDMI",
         Choice {
+            frame: Default::default(),
             id: other.clone(),
             fit: true,
         },
@@ -103,11 +108,19 @@ fn failed_import_leaves_previous_assignment_and_no_partial_media() -> Result<()>
     profile.items.insert(
         id.clone(),
         Item {
+            motion: None,
             name: "working".into(),
             ext: "png".into(),
         },
     );
-    profile.assign(ALL, Choice { id, fit: false })?;
+    profile.assign(
+        ALL,
+        Choice {
+            id,
+            frame: Default::default(),
+            fit: false,
+        },
+    )?;
     store.save(&profile)?;
     let error = store
         .import(
@@ -131,11 +144,16 @@ fn reconnect_preserves_overrides_and_login_opt_out() -> Result<()> {
     p.items.insert(
         id.clone(),
         Item {
+            motion: None,
             name: "clip".into(),
             ext: "webm".into(),
         },
     );
-    let c = Choice { id, fit: true };
+    let c = Choice {
+        id,
+        frame: Default::default(),
+        fit: true,
+    };
     p.assign(ALL, c.clone())?;
     assert_eq!(p.autostart, Some(true));
     p.autostart = Some(false);
@@ -176,20 +194,48 @@ fn clearing_all_screens_keeps_imports_and_removes_recovery_posters() -> Result<(
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media").join(name);
         let (id, item) = store.import(&src, |_, _| {}, media::thumbnail)?;
         profile.items.insert(id.clone(), item);
-        profile.assign(if ext == "png" { ALL } else { "HDMI-A" }, Choice { id, fit: false })?;
+        profile.assign(
+            if ext == "png" { ALL } else { "HDMI-A" },
+            Choice {
+                id,
+                frame: Default::default(),
+                fit: false,
+            },
+        )?;
     }
     store.save(&profile)?;
     let mut loaded = store.load()?;
-    assert!(loaded.system_wallpaper.is_some());
-    loaded.clear_wallpapers();
+    assert!(loaded.system_wallpaper.is_none());
+    loaded.hidden = true;
+    loaded.system_wallpaper = None;
     store.save(&loaded)?;
     let cleared = store.load()?;
-    assert!(cleared.screens.is_empty() && !cleared.has_animation() && cleared.system_wallpaper.is_none());
+    assert!(cleared.screens == loaded.screens && !cleared.visible() && cleared.system_wallpaper.is_none());
     assert_eq!(cleared.items, profile.items);
     for (id, item) in &cleared.items {
         assert!(store.media(id, item).exists() && store.thumb(id).exists());
     }
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(store.profile_path())?)?;
     assert_eq!(saved["wallpaper_stills"]["screens"], serde_json::json!({}));
+    Ok(())
+}
+
+#[test]
+fn legacy_single_frame_gif_preserves_its_assignment_without_claiming_the_portal() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().to_owned())?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/single.gif");
+    let (id, item) = store.import(&source, |_, _| {}, media::thumbnail)?;
+    let input = serde_json::json!({
+        "items": { &id: {"ext": item.ext, "name": item.name} },
+        "screens": {"*": {"id": id, "fit": true}},
+        "autostart": false, "power": false, "paused": true
+    });
+    fs::write(store.profile_path(), serde_json::to_vec(&input)?)?;
+    let profile = store.load()?;
+    assert!(!profile.items[&id].animated());
+    assert_eq!(profile.screens[ALL].frame, Default::default());
+    assert!(profile.system_wallpaper.is_none() && profile.visible());
+    assert_eq!(profile.autostart, Some(false));
     Ok(())
 }

@@ -9,6 +9,7 @@ fn video_formats_can_be_imported_from_an_extensionless_tempfile() -> Result<()> 
         let tmp = dir.path().join("incoming");
         std::fs::copy(file, &tmp)?;
         let item = Item {
+            motion: None,
             name: "loop".into(),
             ext: ext.into(),
         };
@@ -40,5 +41,27 @@ fn imports_gif_whose_trailer_is_past_the_first_read_buffer() -> Result<()> {
     assert!(poster.height() > 0 && poster.height() <= 256);
     let animation = gtk::gdk_pixbuf::PixbufAnimation::from_file(store.media(&id, &item))?;
     assert!(!gtk::prelude::PixbufAnimationExt::is_static_image(&animation));
+    Ok(())
+}
+
+#[test]
+fn image_motion_survives_import_and_loading_an_old_library() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let store = crate::library::Store::at(tmp.path().into())?;
+    let mut p = crate::library::Profile::default();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media");
+    for (name, animated) in [
+        ("single.gif", false),
+        ("loop.gif", true),
+        ("loop.webp", true),
+        ("landscape.png", false),
+    ] {
+        let (id, mut item) = store.import(&fixtures.join(name), |_, _| {}, thumbnail)?;
+        assert_eq!(item.animated(), animated);
+        item.motion = None;
+        p.items.insert(id.clone(), item);
+        store.save(&p)?;
+        assert_eq!(store.load()?.items[&id].animated(), animated);
+    }
     Ok(())
 }

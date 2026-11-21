@@ -1,16 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="dusk" x2=".85" y2="1" gradientUnits="objectBoundingBox">
-      <stop stop-color="#355775"/><stop offset="1" stop-color="#172a40"/>
-    </linearGradient>
-    <clipPath id="canvas"><rect x="10" y="13" width="108" height="98" rx="21"/></clipPath>
-  </defs>
-  <rect x="10" y="20" width="108" height="97" rx="21" fill="#16283a"/>
-  <g clip-path="url(#canvas)">
-    <rect x="10" y="13" width="108" height="98" fill="url(#dusk)"/>
-    <circle cx="85" cy="41" r="13" fill="#ffd196"/>
-    <path d="M3 93 42 48q3-4 7 0l38 41 34-29v58H3z" fill="#91cbba"/>
-    <path d="m2 106 56-35q3-2 6 0l20 13 38-32v65H2z" fill="#4d998b"/>
-    <path d="m3 113 55-25q7-3 15 0l16 6 32-17v39H3z" fill="#28706e"/>
-  </g>
+  <path fill="#174945" d="M22 27q1-10 12-10h57q12 0 14 12l9 54q1 8-7 9l-18 3-2 8-64-3q-9 0-8-10z"/>
+  <path fill="#e8a15f" d="M87 22q9-3 11 8l8 51-24 4z"/>
+  <path fill="#f5e8c8" d="M26 29q1-7 9-7h55q-5 2-6 11l-7 60q-26 7-56-1z"/>
+  <path fill="#277f72" d="M23 67q16-19 33-10t25-7l-5 47q-28 7-56-2z"/>
+  <path fill="none" stroke="#174945" stroke-linecap="round" stroke-width="6" d="m25 94-2 10m17-8-2 11m17-10-2 11m18-12-2 10"/>
+  <path fill="none" stroke="#90cfb6" stroke-width="3.5" d="M22 85q26 7 55 1"/>
 </svg>

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn late_timer_presents_the_current_gif_frame() -> Result<()> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/loop.gif");
-    let gif = Gif::open(&path)?;
+    let gif = Gif::open(&path, 100)?;
     let reference = gif.animation.iter(Some(SystemTime::UNIX_EPOCH));
     let start = std::time::Instant::now();
     gif.play(true);
@@ -23,7 +23,7 @@ fn late_timer_presents_the_current_gif_frame() -> Result<()> {
 #[test]
 fn pausing_keeps_the_displayed_texture_and_resumes_the_same_stream() -> Result<()> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/loop.gif");
-    let gif = Gif::open(&path)?;
+    let gif = Gif::open(&path, 100)?;
     let context = glib::MainContext::default();
     gif.play(true);
     let first = gif.decoded.get();

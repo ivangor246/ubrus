@@ -1,62 +1,53 @@
 use crate::{
     library::{self, ALL},
-    preferences::Locale,
+    preferences::{Locale, Text},
 };
 pub fn settings(locale: Locale, p: &library::Profile, status: &super::control::Status) -> String {
-    let tr = |en, ru| locale.pair(en, ru);
     let on = |flag: bool| {
         if flag {
-            tr("on", "вкл.")
+            locale.get(Text::ReportOn)
         } else {
-            tr("off", "выкл.")
+            locale.get(Text::ReportOff)
         }
     };
     let mut lines = vec![
         format!(
             "{} {}",
-            tr("Session", "Сеанс"),
+            locale.get(Text::ReportSession),
             std::env::var("XDG_SESSION_TYPE").unwrap_or_default()
         ),
+        format!("{} — {}", locale.get(Text::ReportShellExtension), on(status.connected)),
         format!(
             "{} — {}",
-            tr("Shell extension", "Расширение GNOME"),
-            on(status.connected)
-        ),
-        format!(
-            "{} — {}",
-            tr("Restore at login", "Запуск при входе"),
+            locale.get(Text::ReportRestoreAtLogin),
             on(p.autostart.unwrap_or(false))
         ),
-        format!("{} — {}", tr("Manual pause", "Ручная пауза"), on(p.paused)),
-        format!(
-            "{} — {}",
-            tr("Follow power saver", "Учитывать энергосбережение"),
-            on(p.power)
-        ),
+        format!("{} — {}", locale.get(Text::ReportManualPause), on(p.paused)),
+        format!("{} — {}", locale.get(Text::ReportFollowPowerSaver), on(p.power)),
     ];
     let assignment = |screen: &str| {
         if let Some(choice) = p.screens.get(screen).or_else(|| p.screens.get(ALL)) {
             let fit = if choice.fit {
-                tr("Fit", "Вписать")
+                locale.get(Text::Fit)
             } else {
-                tr("Fill", "Заполнить")
+                locale.get(Text::Fill)
             };
             format!("{} · {fit}", p.items[&choice.id].name)
         } else {
-            tr("System wallpaper", "Системный фон").to_string()
+            locale.get(Text::ReportSystemWallpaper).to_string()
         }
     };
     if p.screens.contains_key(ALL) {
-        lines.push(format!("{} · {}", tr("All monitors", "Все мониторы"), assignment(ALL)));
+        lines.push(format!("{} · {}", locale.get(Text::All), assignment(ALL)));
     }
     for m in &status.outputs {
         let reason = match m.reason.as_str() {
-            "static" => tr("still image", "статический фон"),
-            "covered" => tr("covered by windows", "закрыт окнами"),
-            "power-saver" => tr("power saver", "энергосбережение"),
-            "manual" => tr("paused manually", "ручная пауза"),
-            "overview" => tr("paused in overview", "пауза в обзоре GNOME"),
-            _ => tr("visible", "виден"),
+            "static" => locale.get(Text::ReportStillImage),
+            "covered" => locale.get(Text::ReportCoveredByWindows),
+            "power-saver" => locale.get(Text::ReportPowerSaver),
+            "manual" => locale.get(Text::ReportPausedManually),
+            "overview" => locale.get(Text::ReportPausedInOverview),
+            _ => locale.get(Text::ReportVisible),
         };
         lines.push(format!(
             "{} · {}×{} · {} · {}",
@@ -75,7 +66,7 @@ pub fn settings(locale: Locale, p: &library::Profile, status: &super::control::S
         lines.push(format!(
             "{} · {} · {}",
             id,
-            tr("disconnected", "отключён"),
+            locale.get(Text::ReportDisconnected),
             assignment(id)
         ));
     }
@@ -83,11 +74,11 @@ pub fn settings(locale: Locale, p: &library::Profile, status: &super::control::S
         for s in streams {
             lines.push(format!(
                 "{} {} · {} {} · {} {}",
-                tr("Decoder", "Декодер"),
+                locale.get(Text::ReportDecoder),
                 s["decoder"].as_str().unwrap_or("—"),
-                tr("decoded", "декодировано"),
+                locale.get(Text::ReportDecoded),
                 s["decoded"],
-                tr("dropped", "пропущено"),
+                locale.get(Text::ReportDropped),
                 s["dropped"]
             ));
         }

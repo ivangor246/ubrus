@@ -43,11 +43,14 @@ def seed_library(session: DesktopSession) -> None:
     media.mkdir(parents=True)
     thumbnails.mkdir()
     clip = media / 'test.webm'
-    create_media(
-        'videotestsrc num-buffers=90 pattern=smpte horizontal-speed=17 ! '
-        'video/x-raw,width=1920,height=1080,framerate=30/1 ! vp8enc threads=1 deadline=1 ! webmmux',
-        clip,
-    )
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        shutil.copyfile(MEDIA_DIR / 'loop.webm', clip)
+    else:
+        create_media(
+            'videotestsrc num-buffers=90 pattern=smpte horizontal-speed=17 ! '
+            'video/x-raw,width=1920,height=1080,framerate=30/1 ! vp8enc threads=1 deadline=1 ! webmmux',
+            clip,
+        )
     digest = hashlib.sha256(clip.read_bytes()).hexdigest()
     clip.rename(media / f'{digest}.webm')
     create_media('videotestsrc num-buffers=1 ! pngenc', thumbnails / f'{digest}.png')
@@ -61,11 +64,11 @@ def seed_library(session: DesktopSession) -> None:
     session.profile_path.write_text(json.dumps(profile), encoding='utf-8')
 
 
-def start_shell(session: DesktopSession) -> None:
+def start_shell(session: DesktopSession, extension_root: Path | None = None) -> None:
     extensions = session.data_dir / 'gnome-shell/extensions'
     extensions.mkdir(parents=True, exist_ok=True)
     if not session.installed:
-        (extensions / EXTENSION).symlink_to(PROJECT_ROOT / 'extension', target_is_directory=True)
+        (extensions / EXTENSION).symlink_to(extension_root or PROJECT_ROOT / 'extension', target_is_directory=True)
     (extensions / PROBE_EXTENSION).symlink_to(
         SESSION_DIR / 'fixtures/probe', target_is_directory=True
     )
@@ -152,12 +155,29 @@ def check_extension_restart(session: DesktopSession) -> None:
 
 
 def run(session: DesktopSession) -> None:
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'update':
+        from scenarios.update import check_update
+        check_update(session, start_shell)
+        return
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'renderer':
+        from scenarios.renderer import verify_renderer
+        verify_renderer(session)
+        return
     if session.mode == 'x11' or not session.installed:
         session.spawn(sys.executable, str(SESSION_DIR / 'fixtures/filechooser.py'))
         wait_for(
             'the file chooser fixture',
             lambda: session.owns_name('org.freedesktop.impl.portal.desktop.ubrustest'),
         )
+
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        from scenarios.x11_settings import check_first_run
+        os.environ['UBRUS_RENDERER'] = str(SESSION_DIR / 'fixtures/renderer.py')
+        seed_library(session)
+        start_shell(session)
+        app = start_controller(session)
+        check_first_run(session, app)
+        return
 
     seed_library(session)
     start_shell(session)

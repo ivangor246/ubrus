@@ -6,10 +6,15 @@ Run these commands from the project root.
 | --- | --- |
 | `make check` | Rust formatting, Clippy and all unit tests |
 | `make test` | Rust tests plus Node.js and GJS extension tests |
+| `make test-controller` | Private X11 window at three sizes, portal and panel with a Python renderer |
+| `make test-renderer` | Private X11 renderer, per-monitor framing and playback rates with a Python protocol peer |
+| `make test-update` | Same-version DEB replacement in a temporary install tree |
 | `make test-integration` | Private GNOME Wayland session with two virtual monitors |
 | `make test-integration SESSION=x11` | X11 session with Xvfb, portal dialogs and the Iced window |
 
 Unit tests need Node.js and GJS. For session tests install GNOME Shell, python3-gi, gir1.2-gtk-4.0, dbus-daemon, gstreamer1.0-tools, python3-gi-cairo, xauth, xdotool, x11-utils, python3-pil and xvfb.
+
+Use the component targets one at a time on machines restricted to one running Rust application. The full integration targets run both real components.
 
 ## Desktop sessions
 

@@ -12,7 +12,7 @@ use gtk::{gio, glib, prelude::*};
 use std::cell::Cell;
 
 type Outcome = (Option<Text>, Option<String>);
-pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome>, fallback: Text) {
+pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome>, fallback: Text, from_panel: bool) {
     let (feedback, selected) = result.unwrap_or_else(|e| {
         if matches!(
             e.downcast_ref::<ashpd::Error>(),
@@ -26,6 +26,7 @@ pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome
             "Unsupported media format" => Text::Unsupported,
             "Expected a non-empty regular file" => Text::EmptyFile,
             "Library file is missing" => Text::Missing,
+            "Extension update required" => Text::ShellUpdate,
             "Extension required" => Text::Extension,
             "Selected monitor disconnected" => Text::Disconnected,
             _ if e.downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(28) => Text::DiskFull,
@@ -34,10 +35,39 @@ pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome
         (Some(message), None)
     });
     let _ = events.try_send(Event::Done {
+        from_panel,
         profile: c.profile.borrow().clone(),
         feedback,
         selected,
     });
+}
+
+fn use_portal(c: &Control) -> bool {
+    std::env::var_os("SNAP").is_none() || !c.status.borrow().connected
+}
+
+async fn install_picture(
+    c: &Control,
+    path: std::path::PathBuf,
+    choice: crate::library::Choice,
+    parent: Option<WindowIdentifier>,
+    size: (i32, i32),
+) -> Result<SystemWallpaper> {
+    let previous = c.profile.borrow().system_wallpaper.clone();
+    let store = c.store.clone();
+    let (tmp, background) = gio::spawn_blocking(move || -> Result<_> {
+        let tmp = portal::system_picture(&path, &choice, size.0, size.1)?;
+        let background = SystemWallpaper::capture(previous.as_ref(), tmp.path(), store.root())?;
+        Ok((tmp, background))
+    })
+    .await
+    .map_err(|_| anyhow!("Image worker failed"))??;
+    glib::future_with_timeout(
+        std::time::Duration::from_secs(180),
+        portal::wallpaper(parent, tmp.path()),
+    )
+    .await??;
+    Ok(background)
 }
 
 pub(super) async fn perform(
@@ -76,6 +106,7 @@ pub(super) async fn perform(
             Ok((Some(Text::Imported), Some(id)))
         }
         Action::Apply(screen, choice) => {
+            ensure!(!c.profile.borrow().disabled, "Ubrus is disabled");
             let item = c
                 .profile
                 .borrow()
@@ -85,25 +116,20 @@ pub(super) async fn perform(
                 .context("Unknown library item")?;
             let path = c.store.media(&choice.id, &item);
             ensure!(path.is_file(), "Library file is missing");
-            if screen == ALL && !item.animated() {
-                let previous = c.profile.borrow().system_wallpaper.clone();
-                let library = c.store.clone();
-                let (tmp, background) = gio::spawn_blocking(move || -> Result<_> {
-                    let tmp = portal::system_picture(&path, choice.fit, size.0, size.1)?;
-                    let background = SystemWallpaper::capture(previous.as_ref(), tmp.path(), library.root())?;
-                    Ok((tmp, background))
-                })
-                .await
-                .map_err(|_| anyhow!("Image worker failed"))??;
-                glib::future_with_timeout(
-                    std::time::Duration::from_secs(180),
-                    portal::wallpaper(parent, tmp.path()),
-                )
-                .await??;
-                c.commit(|p| {
-                    p.system_wallpaper = Some(background);
+            if screen == ALL && !item.animated() && use_portal(c) {
+                ensure!(
+                    !c.status.borrow().connected || c.status.borrow().framing || choice.frame == Default::default(),
+                    "Extension update required"
+                );
+                let background = install_picture(c, path, choice.clone(), parent, size).await?;
+                let saved = c.commit(|p| {
+                    p.system_wallpaper = Some(background.clone());
                     p.assign(&screen, choice)
-                })?;
+                });
+                if let Err(error) = saved {
+                    background.restore().await?;
+                    return Err(error);
+                }
             } else {
                 ensure!(c.status.borrow().connected, "Extension required");
                 ensure!(
@@ -128,12 +154,14 @@ pub(super) async fn perform(
                 ensure!(p.items.contains_key(&id), "Unknown library item");
                 p.system_wallpaper.clone().filter(|_| p.restores_desktop_on_delete(&id))
             };
-            if let Some(background) = background {
-                background.restore(parent).await?;
-            }
+            let restored = match background {
+                Some(background) => background.restore().await?,
+                None => true,
+            };
             c.commit(|p| p.delete_item(&id))?;
             let feedback = match c.store.finish_deletions(&mut c.profile.borrow_mut()) {
-                Ok(()) => Text::Deleted,
+                Ok(()) if restored => Text::Deleted,
+                Ok(()) => Text::OwnershipUnknown,
                 Err(e) => {
                     c.store.log(&format!("Library cleanup: {e:#}"));
                     Text::DeleteCleanup
@@ -141,17 +169,64 @@ pub(super) async fn perform(
             };
             Ok((Some(feedback), None))
         }
-        Action::ClearWallpapers => {
-            let background = c.profile.borrow().system_wallpaper.clone();
-            if let Some(background) = background {
-                background.restore(parent).await?;
+        Action::Visible(_) | Action::Enabled(_) => {
+            let mut next = c.profile.borrow().clone();
+            let was_visible = next.visible();
+            match action {
+                Action::Enabled(value) => {
+                    next.disabled = !value;
+                    next.autostart = Some(value);
+                }
+                Action::Visible(value) => next.hidden = !value,
+                _ => unreachable!(),
             }
-            c.commit(|p| {
-                p.clear_wallpapers();
-                Ok(())
-            })?;
-            c.store.log("Wallpaper assignments cleared");
-            Ok((Some(Text::Cleared), None))
+            let mut installed = None;
+            let mut confirm = false;
+            let mut restored = true;
+            if was_visible && !next.visible() {
+                if let Some(background) = next.system_wallpaper.take() {
+                    restored = background.restore().await?;
+                }
+            } else if !was_visible && next.visible() {
+                for choice in next.screens.values() {
+                    ensure!(
+                        c.store.media(&choice.id, &next.items[&choice.id]).is_file(),
+                        "Library file is missing"
+                    );
+                }
+                let portal_choice = next
+                    .screens
+                    .get(ALL)
+                    .filter(|choice| !next.items[&choice.id].animated() && use_portal(c));
+                confirm = next.screens.len() > usize::from(portal_choice.is_some());
+                ensure!(!confirm || c.status.borrow().connected, "Extension required");
+                ensure!(
+                    !c.status.borrow().connected
+                        || c.status.borrow().framing
+                        || next.screens.values().all(|c| c.frame == Default::default()),
+                    "Extension update required"
+                );
+                if let Some(choice) = portal_choice {
+                    let path = c.store.media(&choice.id, &next.items[&choice.id]);
+                    installed = Some(install_picture(c, path, choice.clone(), parent, size).await?);
+                    next.system_wallpaper = installed.clone();
+                }
+            }
+            let result = if confirm {
+                c.publish(ALL.into(), next).await
+            } else {
+                c.commit(|p| {
+                    *p = next;
+                    Ok(())
+                })
+            };
+            if let Err(error) = result {
+                if let Some(background) = installed {
+                    background.restore().await?;
+                }
+                return Err(error);
+            }
+            Ok(((!restored).then_some(Text::OwnershipUnknown), None))
         }
         Action::Export | Action::ExportAs => {
             let destination = if matches!(action, Action::ExportAs) {

@@ -33,10 +33,19 @@ export function pauseReason(scene, saving, occluded, overview) {
 
 // The source already contains the monitor's Fit/Fill composition.
 export function overviewCrop(sourceWidth, sourceHeight, width, height) {
-    if (Math.min(sourceWidth, sourceHeight, width, height) <= 0)
-        return { x1: 0, y1: 0, x2: 0, y2: 0 };
+    if (Math.min(sourceWidth, sourceHeight, width, height) <= 0) return { x1: 0, y1: 0, x2: 0, y2: 0 };
     const scale = Math.max(width / sourceWidth, height / sourceHeight);
     const x = (width - sourceWidth * scale) / 2;
     const y = (height - sourceHeight * scale) / 2;
     return { x1: x, y1: y, x2: width - x, y2: height - y };
+}
+
+export function frameBounds(selection, width, height) {
+    const [sw, sh] = selection.dimensions;
+    const frame = selection.frame ?? {};
+    const scale =
+        ((selection.fit ? Math.min : Math.max)(width / sw, height / sh) * (frame.zoom ?? 100)) / 100;
+    const w = sw * scale,
+        h = sh * scale;
+    return [((width - w) * (frame.x ?? 50)) / 100, ((height - h) * (frame.y ?? 50)) / 100, w, h];
 }

@@ -60,7 +60,9 @@ if [[ "$mode" == x11 ]]; then
     touch "$XAUTHORITY"
     cookie=$(mcookie)
     xauth add :0 MIT-MAGIC-COOKIE-1 "$cookie"
-    "${XVFB:-Xvfb}" -displayfd 3 -screen 0 1280x720x24 -nolisten tcp -noreset -auth "$XAUTHORITY" \
+    geometry=1280x720x24
+    if [[ ${UBRUS_TEST_COMPONENT:-} == controller ]]; then geometry=1600x1000x24; fi
+    "${XVFB:-Xvfb}" -displayfd 3 -screen 0 "$geometry" -nolisten tcp -noreset -auth "$XAUTHORITY" \
         3>"$temp/display" 2>"$log_dir/xvfb.log" &
     xvfb_pid=$!
     for ((i=0; i<100; i++)); do

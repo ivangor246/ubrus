@@ -3,8 +3,8 @@
 import json
 import os
 import re
+import shutil
 import subprocess
-from itertools import groupby
 from pathlib import Path
 from subprocess import Popen
 
@@ -17,9 +17,8 @@ gi.require_version('Gdk', '4.0')
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 SETTINGS_WINDOW = ('--onlyvisible', '--name', '^Ubrus$')
-# Coordinates within the fixed-size integration window. Both radio groups use these columns.
-RADIO_X = {'system': 28, 'light': 197, 'dark': 366, 'english': 197, 'russian': 366}
-HEADING_BOX = (15, 80, 185, 130)
+HEADING_BOX = (25, 80, 140, 110)
+PICKER_ROW = 125
 
 
 def xdotool(*args: str) -> str:
@@ -28,15 +27,27 @@ def xdotool(*args: str) -> str:
 
 class SettingsWindow:
     def __init__(self) -> None:
-        self.id = xdotool('search', '--sync', *SETTINGS_WINDOW).splitlines()[-1]
+        def find_window():
+            result = subprocess.run(
+                ['xdotool', 'search', *SETTINGS_WINDOW], capture_output=True, text=True
+            )
+            ids = result.stdout.splitlines()
+            return ids[-1] if result.returncode == 0 and ids else None
+
+        self.id = wait_for('mapped settings window', find_window)
         self.focus()
+        self.geometry()
+        wait_for('Iced to draw the Ubrus heading', self.heading_is_drawn)
+
+    def geometry(self):
         info = subprocess.check_output(['xwininfo', '-id', self.id], text=True, timeout=6)
         coordinates = dict(re.findall(r'Absolute upper-left ([XY]):\s*(-?\d+)', info))
         if coordinates.keys() != {'X', 'Y'}:
             raise RuntimeError(f'Could not read settings window position from xwininfo:\n{info}')
         self.left = int(coordinates['X'])
         self.top = int(coordinates['Y'])
-        wait_for('Iced to draw the Ubrus heading', self.heading_is_drawn)
+        size = re.search(r'Width:\s*(\d+)\s*Height:\s*(\d+)', info)
+        return tuple(map(int, size.groups()))
 
     def focus(self) -> None:
         xdotool('windowactivate', '--sync', self.id)
@@ -45,15 +56,7 @@ class SettingsWindow:
         xdotool('key', '--clearmodifiers', shortcut)
 
     def click(self, x: int, y: int) -> None:
-        xdotool('mousemove', str(self.left + x), str(self.top + y), 'click', '1')
-
-    def drag(self, start: tuple[int, int], end: tuple[int, int]) -> None:
-        xdotool(
-            'mousemove', str(self.left + start[0]), str(self.top + start[1]),
-            'mousedown', '1',
-            'mousemove', str(self.left + end[0]), str(self.top + end[1]),
-            'mouseup', '1',
-        )
+        xdotool('mousemove', '--window', self.id, str(x), str(y), 'click', '1')
 
     def capture(self) -> Image.Image:
         bounds = (self.left, self.top, self.left + 550, self.top + 380)
@@ -71,33 +74,48 @@ class SettingsWindow:
     def heading(self) -> bytes:
         return self.capture().crop(HEADING_BOX).tobytes()
 
-    def selected_radio_rows(self) -> tuple[int, int] | None:
-        # Locate the filled centers of both System radio buttons, ignoring thin outlines.
-        image = self.capture().convert('RGB')
 
-        def is_accent_pixel(y: int) -> bool:
-            red, _, blue = image.getpixel((RADIO_X['system'], y))
-            return blue - red > 70
+def check_responsive(session, window, variant):
+    for width, height in [(1440, 900), (620, 430), (900, 600)]:
+        xdotool('windowsize', '--sync', window.id, str(width), str(height))
 
-        centers = []
-        for colored, run in groupby(range(105, 340), key=is_accent_pixel):
-            if not colored:
-                continue
-            rows = list(run)
-            if len(rows) >= 4:
-                centers.append(sum(rows) // len(rows))
-        if len(centers) == 2 and 60 <= centers[1] - centers[0] <= 85:
-            return centers[0], centers[1]
-        return None
+        # A wide editor shares the row with the gallery. A narrow editor has its own page.
+        def drawn():
+            if window.geometry() != (width, height):
+                return None
+            screen = ImageGrab.grab(
+                bbox=(window.left, window.top, window.left + width, window.top + height),
+                xdisplay=os.environ['DISPLAY'],
+            )
+            blue = (37, 91, 156)
+            green = (32, 132, 61)
+            x = width // 2 if width == 620 else width - 175
+            colors = [screen.getpixel((x, y))[:3] for y in range(110, height - 90)]
+            actual_height = colors.count(blue) + colors.count(green)
+            if blue not in colors or green not in colors or abs(actual_height - height * 0.32) > 8:
+                return None
+            if screen.getpixel((x, height - 12))[:3] in (blue, green):
+                raise AssertionError('The preview overlaps the editor footer')
+            return screen
+
+        # Reopening the gallery at a narrow size can require a deliberate selection.
+        if width == 620:
+            window.click(116, 175)
+        screenshot = wait_for(f'{width}×{height} editor ({variant})', drawn, timeout=6)
+        output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
+        screenshot.save(output / f'editor-{variant}-{width}.png')
+    session.log(f'checked editor at three window sizes ({variant})')
 
 
-def select_option(
-    session: DesktopSession, window: SettingsWindow, setting: str, value: str, row: int
-) -> None:
-    window.click(RADIO_X[value], row)
-    wait_for(
-        f'{setting} preference to be saved as {value}', lambda: session.profile()[setting] == value
+def select_option(session, window, setting, value, row):
+    # Each menu places its first item underneath the field.
+    x = 72 if setting == 'theme' else 208
+    choices = (
+        ['system', 'light', 'dark'] if setting == 'theme' else ['system', 'english', 'russian']
     )
+    window.click(x, row)
+    window.click(x, row + 31 + 30 * choices.index(value))
+    wait_for(f'{setting} = {value}', lambda: session.profile()[setting] == value)
 
 
 def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> None:
@@ -126,9 +144,9 @@ def check_languages(session: DesktopSession, window: SettingsWindow, row: int) -
 
 def check_preferences(
     session: DesktopSession, app: Popen, window: SettingsWindow
-) -> tuple[Popen, SettingsWindow]:
+) -> tuple[Popen, SettingsWindow, bytes]:
     window.key('ctrl+comma')
-    theme_row, language_row = wait_for('both System radio buttons', window.selected_radio_rows)
+    theme_row = language_row = PICKER_ROW
     check_themes(session, window, theme_row)
     russian_heading = check_languages(session, window, language_row)
 
@@ -137,6 +155,7 @@ def check_preferences(
     wait_for('dark theme before restarting', window.dark)
     english_dark = window.heading()
     window.key('alt+F4')
+    app.terminate()
     app.wait(timeout=8)
     wait_for('the controller to exit', lambda: not session.owns_name(APP_BUS))
 
@@ -151,11 +170,24 @@ def check_preferences(
     select_option(session, window, 'language', 'system', language_row)
     wait_for('the Russian system language', lambda: window.heading() == russian_heading)
 
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        select_option(session, window, 'theme', 'dark', theme_row)
+        wait_for('dark settings to finish drawing', window.dark)
+        window.key('Escape')
+        wait_for(
+            'gallery after leaving Settings',
+            lambda: window.capture().getpixel((64, 154))[:3] == (37, 91, 156),
+        )
+        window.click(106, 158)
+        check_responsive(session, window, 'ru-dark')
+        window.key('ctrl+comma')
+        select_option(session, window, 'theme', 'system', theme_row)
+        wait_for('restored Russian settings', lambda: window.heading() == russian_heading)
     check_diagnostics(session, window, russian_heading)
     session.log(
         'followed live GNOME theme changes; switched both languages and themes; reopened with saved overrides'
     )
-    return app, window
+    return app, window, russian_heading
 
 
 def clipboard_text() -> str:
@@ -182,12 +214,28 @@ def clipboard_text() -> str:
 def check_diagnostics(
     session: DesktopSession, window: SettingsWindow, settings_heading: bytes
 ) -> None:
-    window.click(830, 38)
+    window.key('ctrl+d')
     wait_for('the diagnostics page', lambda: window.heading() != settings_heading)
     Gtk.init()
-    window.drag((25, 197), (67, 197))
-    window.key('ctrl+c')
-    wait_for('the mouse-selected word', lambda: clipboard_text() == 'Сеанс')
+
+    def select_word():
+        xdotool(
+            'mousemove',
+            '--window',
+            window.id,
+            '42',
+            '175',
+            'click',
+            '--repeat',
+            '2',
+            '--delay',
+            '100',
+            '1',
+        )
+        window.key('ctrl+c')
+        return clipboard_text() == 'Сеанс'
+
+    wait_for('the mouse-selected word', select_word)
     window.key('ctrl+Home')
     window.key('shift+End')
     window.key('ctrl+c')
@@ -198,7 +246,7 @@ def check_diagnostics(
 
     # The primary export must succeed without asking the file chooser for a path.
     session.selection.unlink(missing_ok=True)
-    window.click(175, 150)
+    window.click(345, 132)
     downloads = session.runtime_dir / 'downloads'
     wait_for(
         'a directly saved Russian report',
@@ -209,11 +257,14 @@ def check_diagnostics(
     )
     chosen = session.runtime_dir / 'report.txt'
     session.selection.write_text(str(chosen), encoding='utf-8')
-    window.click(315, 150)
-    wait_for(
-        'a report saved through the chooser',
-        lambda: chosen.is_file() and 'Расширение GNOME' in chosen.read_text(encoding='utf-8'),
-    )
+
+    def save_as():
+        if chosen.is_file():
+            return 'Расширение GNOME' in chosen.read_text(encoding='utf-8')
+        window.click(505, 132)
+        return False
+
+    wait_for('a report saved through the chooser', save_as)
     window.key('Escape')
     session.log('copied selected diagnostics and saved reports directly and through the portal')
 
@@ -225,8 +276,9 @@ def import_file(
     window.key('ctrl+o')
     wait_for(
         f'{path.name} in the library',
-        lambda: session.profile_path.is_file()
-        and len(session.profile()['items']) == expected_count,
+        lambda: (
+            session.profile_path.is_file() and len(session.profile()['items']) == expected_count
+        ),
     )
     window.focus()
 
@@ -235,6 +287,59 @@ def applied_format(session: DesktopSession) -> str | None:
     profile = session.profile()
     selected = profile['screens'].get('*', {}).get('id')
     return profile['items'].get(selected, {}).get('ext')
+
+
+def frame_static(window):
+    # Sample the preview as well as the saved composition. Dragging and keyboard
+    # positioning use the same normalized coordinates on each display.
+    def editable():
+        window.geometry()
+        x, y = window.left + 700, window.top + 162
+        return ImageGrab.grab(bbox=(x, y, x + 1, y + 1), xdisplay=os.environ['DISPLAY']).getpixel(
+            (0, 0)
+        )[:3] == (37, 91, 156)
+
+    wait_for('the editable photo', editable)
+    window.click(650, 410)
+    window.click(650, 459)
+    window.key('shift+Down')
+    window.geometry()
+
+    def dimmed():
+        color = ImageGrab.grab(
+            bbox=(window.left + 700, window.top + 162, window.left + 701, window.top + 163),
+            xdisplay=os.environ['DISPLAY'],
+        ).getpixel((0, 0))
+        return 65 < color[2] < 90
+
+    wait_for('the dimmed preview', dimmed)
+
+
+def check_static_pixels(session):
+    choice = session.profile()['screens']['*']['frame']
+    assert (
+        45 <= choice['brightness'] <= 55 and 185 <= choice['zoom'] <= 210 and choice['y'] == 52
+    ), choice
+    gain = choice['brightness'] / 100
+
+    def matches(image):
+        for y, rgb in [(image.height // 4, (37, 91, 156)), (3 * image.height // 4, (32, 132, 61))]:
+            px = image.getpixel((10, y))[:3]
+            if max(abs(v - round(ref * gain)) for v, ref in zip(px, rgb)) > 3:
+                return False
+        return True
+
+    cache = Path(os.environ['XDG_CONFIG_HOME']) / 'background'
+    with Image.open(cache) as picture:
+        assert matches(picture), 'Wallpaper portal composition differs from the preview'
+
+    def painted():
+        session.probe('Capture')
+        with Image.open(session.runtime_dir / 'ubrus-screen.png') as image:
+            return matches(image)
+
+    wait_for('Shell to paint the adjusted still', painted, timeout=6)
+    session.log('compared brightness in the preview, portal PNG and actual desktop pixels')
 
 
 def apply_static(session: DesktopSession, window: SettingsWindow) -> None:
@@ -266,11 +371,19 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     )
 
     window = SettingsWindow()
-    import_file(session, window, MEDIA_DIR / 'landscape.png', 1)
+    photo = session.runtime_dir / ('Landscape panorama with a long gallery title ' * 3 + '.png')
+    shutil.copyfile(MEDIA_DIR / 'landscape.png', photo)
+    import_file(session, window, photo, 1)
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        check_responsive(session, window, 'en-light')
     profile = session.profile()
     assert (profile['theme'], profile['language']) == ('system', 'system')
-    app, window = check_preferences(session, app, window)
+    app, window, russian_settings_heading = check_preferences(session, app, window)
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        frame_static(window)
     apply_static(session, window)
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
+        check_static_pixels(session)
 
     login_entry = Path(os.environ['XDG_CONFIG_HOME']) / 'autostart/ubrus-login.desktop'
     assert not login_entry.exists()
@@ -285,32 +398,79 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
         return any('gif' in stream.get('decoder', '').lower() for stream in streams)
 
     wait_for('GIF playback', gif_is_playing)
-    # Select the second library row to dismiss apply feedback and reveal the full-height sidebar.
-    window.click(70, 205)
-    window.click(70, 565)
-    wait_for('all wallpaper assignments to be cleared', lambda: not session.profile()['screens'])
-    wait_for(
-        'all desktop layers to disappear', lambda: json.loads(session.probe('Wallpapers')[0]) == []
-    )
-    wait_for(
-        'the wallpaper renderer to stop',
-        lambda: not (session.status().get('engine') or {}).get('windows'),
-    )
-    assert len(session.profile()['items']) == 2
-    window.key('ctrl+Return')
-    wait_for('the GIF assignment to be restored', lambda: applied_format(session) == 'gif')
-    wait_for('the removed GIF to play again', gif_is_playing)
 
-    # Open the confirmation for the selected GIF, cancel once, then confirm deletion.
-    window.click(70, 205)
-    window.click(510, 565)
-    window.click(350, 565)
-    assert applied_format(session) == 'gif'
-    deleted_id = session.profile()['screens']['*']['id']
-    window.click(510, 565)
-    window.click(445, 565)
+    def panel(label=''):
+        return json.loads(
+            session.call(
+                'org.gnome.Shell',
+                '/org/ubrus/Test',
+                'org.ubrus.Test',
+                'Panel',
+                GLib.Variant('(s)', (label,)),
+            )[0]
+        )
+
+    saved = session.profile()['screens']
+    wait_for('translated panel actions', lambda: 'Убрать фон Ubrus' in panel())
+    panel('Приостановить анимацию')
     wait_for(
-        'the selected GIF to leave the library', lambda: deleted_id not in session.profile()['items']
+        'paused from panel',
+        lambda: (
+            session.profile()['paused'] and session.status()['outputs'][0]['reason'] == 'manual'
+        ),
+    )
+    wait_for('resume action', lambda: 'Продолжить анимацию' in panel())
+    panel('Продолжить анимацию')
+    wait_for('resumed from panel', lambda: not session.profile()['paused'])
+    panel('Убрать фон Ubrus')
+    wait_for(
+        'wallpaper hidden',
+        lambda: (
+            session.profile()['hidden']
+            and not (session.status().get('engine') or {}).get('windows')
+        ),
+    )
+    assert session.profile()['screens'] == saved
+    wait_for('the restore menu item', lambda: 'Вернуть фон Ubrus' in panel())
+    panel('Вернуть фон Ubrus')
+    wait_for('the GIF to resume', gif_is_playing)
+    panel('Выключить Ubrus')
+    wait_for('Ubrus disabled', lambda: session.profile()['disabled'] and not login_entry.exists())
+    panel('Включить Ubrus')
+    wait_for('Ubrus enabled', lambda: not session.profile()['disabled'] and login_entry.exists())
+    wait_for('the GIF to resume', gif_is_playing)
+    panel('Показывать значок в панели')
+    wait_for('icon removed', lambda: not panel())
+    assert session.profile()['screens'] == saved
+
+    window.focus()
+    window.key('ctrl+comma')
+    wait_for('settings in Russian', lambda: window.heading() == russian_settings_heading)
+    window.click(42, 295)
+    wait_for(
+        'indicator restored from settings',
+        lambda: not session.profile()['hide_indicator'] and panel(),
+    )
+    window.click(42, 264)
+    wait_for(
+        'login switched off in settings',
+        lambda: session.profile()['autostart'] is False and not login_entry.exists(),
+    )
+    assert not session.profile()['disabled']
+    window.click(42, 264)
+    wait_for('login switched on in settings', lambda: login_entry.exists())
+    window.key('Escape')
+
+    # Delete is an explicit, confirmed library action.
+    window.key('Delete')
+    window.key('Escape')
+    assert applied_format(session) == 'gif'
+    deleted_id = saved['*']['id']
+    window.key('Delete')
+    window.key('Return')
+    wait_for(
+        'the selected GIF to leave the library',
+        lambda: deleted_id not in session.profile()['items'],
     )
     assert not session.profile()['screens']
     managed_gif = session.library / 'media' / f'{deleted_id}.gif'
@@ -319,12 +479,13 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     import_file(session, window, MEDIA_DIR / 'loop.gif', 2)
     window.key('ctrl+Return')
     wait_for('the reimported GIF assignment', lambda: applied_format(session) == 'gif')
+    window.focus()
     window.key('alt+F4')
     wait_for(
         'settings to close',
-        lambda: not subprocess.run(
-            ['xdotool', 'search', *SETTINGS_WINDOW], capture_output=True
-        ).stdout,
+        lambda: (
+            not subprocess.run(['xdotool', 'search', *SETTINGS_WINDOW], capture_output=True).stdout
+        ),
     )
     assert app.poll() is None
     session.log(

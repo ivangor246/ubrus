@@ -1,6 +1,6 @@
 [package]
 name = "ubrus"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ publish = false
 anyhow = "1"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_14"] }
 gdk4-x11 = "0.10"
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "image-without-codecs", "thread-pool", "x11", "wayland"] }
+iced = { version = "0.14", default-features = false, features = ["advanced", "tiny-skia", "image-without-codecs", "thread-pool", "x11", "wayland"] }
 # Iced reads the library's PNG posters. GStreamer and GdkPixbuf decode imported media.
 image = { version = "0.25", default-features = false, features = ["png"] }
 ashpd = { version = "0.11", default-features = false, features = ["async-std", "raw_handle", "wayland"] }

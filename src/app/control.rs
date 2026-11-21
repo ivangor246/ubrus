@@ -15,6 +15,7 @@ pub const BUS: &str = "org.ubrus.Ubrus";
 const PATH: &str = "/org/ubrus/Ubrus/Wallpaper";
 const IFACE: &str = "org.ubrus.Ubrus.Wallpaper1";
 const XML: &str = r#"<node><interface name="org.ubrus.Ubrus.Wallpaper1">
+<method name="Panel"><arg type="s" direction="in"/></method>
 <method name="Scene"><arg type="s" direction="out"/></method>
 <method name="Status"><arg type="s" direction="out"/></method><method name="Refresh"/>
 <method name="Report"><arg type="s" direction="in"/></method>
@@ -39,11 +40,13 @@ pub struct Status {
     pub error: String,
     pub applied: u64,
     pub failed: u64,
+    pub extension_build: String,
+    pub framing: bool,
 }
 struct Pending {
     serial: u64,
     screen: String,
-    choice: Choice,
+    profile: Profile,
     ack: Option<futures_channel::oneshot::Sender<Result<(), String>>>,
 }
 pub struct Control {
@@ -79,7 +82,7 @@ fn native_launcher() -> Result<Option<tempfile::TempDir>> {
 }
 
 impl Control {
-    pub fn attach(app: &gio::Application) -> Result<Rc<Self>> {
+    pub fn attach(app: &gio::Application, panel: async_channel::Sender<super::Command>) -> Result<Rc<Self>> {
         let store = Store::open()?;
         let native_launcher = native_launcher().unwrap_or_else(|error| {
             store.log(&format!("Cannot register the native renderer: {error:#}"));
@@ -150,8 +153,34 @@ impl Control {
                     "Scene" if !c.writable => {
                         reply.return_dbus_error("org.ubrus.InvalidProfile", "Invalid saved profile")
                     }
-                    "Report" if sender != Some(&*c.peer.borrow()) => {
+                    "Report" | "Panel" if sender != Some(&*c.peer.borrow()) => {
                         reply.return_dbus_error("org.ubrus.WrongPeer", "Expected GNOME Shell")
+                    }
+                    "Panel" => {
+                        use super::{Action, Command, Preference};
+                        let name = args.get::<(String,)>().map(|(v,)| v).unwrap_or_default();
+                        let size = c
+                            .status
+                            .borrow()
+                            .outputs
+                            .first()
+                            .map_or((1920, 1080), |m| (m.width, m.height));
+                        let command = match name.as_str() {
+                            "open" => Command::Open,
+                            "pause" | "resume" => Command::Set(Preference::Pause(name == "pause")),
+                            "hide-icon" => Command::Set(Preference::Panel(false)),
+                            "enable" | "disable" => Command::Action(Action::Enabled(name == "enable"), None, size),
+                            "show" | "hide" => Command::Action(Action::Visible(name == "show"), None, size),
+                            _ => {
+                                reply.return_dbus_error("org.ubrus.UnknownCommand", "Unknown panel action");
+                                return;
+                            }
+                        };
+                        if panel.try_send(super::Command::Panel(Box::new(command))).is_ok() {
+                            reply.return_value(None);
+                        } else {
+                            reply.return_dbus_error("org.ubrus.Closed", "Controller closing");
+                        }
                     }
                     "Scene" => reply.return_value(Some(&(c.scene().to_string(),).to_variant())),
                     "Status" => reply.return_value(Some(
@@ -216,14 +245,24 @@ impl Control {
         }
     }
     pub async fn apply(&self, screen: String, choice: Choice) -> Result<()> {
+        let mut profile = self.profile.borrow().clone();
+        profile.assign(&screen, choice)?;
+        self.publish(screen, profile).await
+    }
+
+    pub async fn publish(&self, screen: String, profile: Profile) -> Result<()> {
         anyhow::ensure!(self.pending.borrow().is_none(), "Another change is in progress");
+        anyhow::ensure!(
+            self.status.borrow().framing || profile.screens.values().all(|c| c.frame == Default::default()),
+            "Extension update required"
+        );
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
         let (tx, rx) = futures_channel::oneshot::channel();
         *self.pending.borrow_mut() = Some(Pending {
             serial,
-            screen: screen.clone(),
-            choice: choice.clone(),
+            screen,
+            profile: profile.clone(),
             ack: Some(tx),
         });
         self.signal("Changed");
@@ -231,7 +270,10 @@ impl Control {
         self.pending.borrow_mut().take();
         let result = (|| {
             confirmed??.map_err(anyhow::Error::msg)?;
-            self.commit(|p| p.assign(&screen, choice))
+            self.commit(|p| {
+                *p = profile;
+                Ok(())
+            })
         })();
         if result.is_err() {
             self.signal("Changed");
@@ -239,18 +281,16 @@ impl Control {
         result
     }
     fn scene(&self) -> serde_json::Value {
-        let mut p = self.profile.borrow().clone();
+        let saved = self.profile.borrow();
         let pending = self.pending.borrow();
         let serial = pending.as_ref().map_or(0, |t| t.serial);
-        if let Some(t) = pending.as_ref() {
-            let _ = p.assign(&t.screen, t.choice.clone());
-        }
+        let p = pending.as_ref().map_or(&*saved, |t| &t.profile);
         json!({"version":1, "serial":serial, "target":pending.as_ref().map(|t| &t.screen),
             "profile_path":self.store.profile_path(), "snap":std::env::var_os("SNAP").is_some(),
             "native_launcher":self.native_launcher.as_ref().and_then(|dir| dir.path().file_name()?.to_str()),
             "wake_dir":std::env::var_os("SNAP_USER_COMMON").map(std::path::PathBuf::from),
-            "screens":self.store.screen_paths(&p, false), "paused":p.paused, "power":p.power,
-            "pause_in_overview":p.pause_in_overview})
+            "screens":self.store.screen_paths(p, false), "paused":p.paused, "power":p.power,
+            "panel":p.panel(), "pause_in_overview":p.pause_in_overview})
     }
     pub fn signal(&self, name: &str) {
         if std::env::var_os("SNAP").is_some() {
@@ -292,12 +332,19 @@ impl Control {
         self.keep_alive();
         Ok(())
     }
+    pub fn restart(&self) {
+        if crate::desktop::updates::binary_changed() {
+            crate::desktop::updates::request_restart();
+            self.app.quit();
+        }
+    }
     pub fn hold(&self) -> gio::ApplicationHoldGuard {
         self.app.hold()
     }
     pub fn keep_alive(&self) {
         let mut hold = self.hold.borrow_mut();
-        if self.profile.borrow().has_animation() {
+        let p = self.profile.borrow();
+        if !p.hide_indicator || (p.visible() && p.has_animation()) {
             hold.get_or_insert_with(|| self.app.hold());
         } else {
             hold.take();

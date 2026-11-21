@@ -9,10 +9,25 @@ export default class Probe extends Extension {
     enable() {
         if (!GLib.getenv('UBRUS_TEST_SESSION')) throw Error('Requires an isolated test session');
         this.object = Gio.DBusExportedObject.wrapJSObject(
-            '<node><interface name="org.ubrus.Test"><method name="Capture"/><method name="Desktop"/><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
+            '<node><interface name="org.ubrus.Test"><method name="Panel"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="Capture"/><method name="Desktop"/><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
             this,
         );
         this.object.export(Gio.DBus.session, '/org/ubrus/Test');
+    }
+
+    Panel(command) {
+        const bridge = globalThis[Symbol.for('wallpaper@ubrus.org/desktop-bridge')];
+        const menu = bridge?.panel.button?.menu;
+        if (!menu) return '[]';
+        const entries = menu._getMenuItems().filter(item => item.label);
+        const labels = entries.map(item => item.label.text);
+        if (command) {
+            const entry = entries.find(item => item.label.text === command);
+            if (!entry) throw Error('Missing panel action: ' + command);
+            if (entry.toggle) entry.toggle();
+            else entry.activate(null);
+        }
+        return JSON.stringify(labels);
     }
 
     Wallpapers() {

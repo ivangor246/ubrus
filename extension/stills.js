@@ -70,7 +70,7 @@ export class StillCache {
     }
 
     stillScene(scene) {
-        const still = { version: 1, profile_path: scene.profile_path, screens: {} };
+        const still = { version: 1, panel: scene.panel, profile_path: scene.profile_path, screens: {} };
         for (const [id, s] of Object.entries(scene.screens)) {
             still.screens[id] = s.animated ? { ...s, animated: false, path: s.poster } : s;
         }

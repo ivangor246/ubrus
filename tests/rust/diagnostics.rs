@@ -8,6 +8,7 @@ fn diagnostics_include_inherited_explicit_and_disconnected_assignments() -> Resu
         profile.items.insert(
             name.into(),
             library::Item {
+                motion: None,
                 name: name.into(),
                 ext: "png".into(),
             },
@@ -15,6 +16,7 @@ fn diagnostics_include_inherited_explicit_and_disconnected_assignments() -> Resu
         profile.assign(
             screen,
             Choice {
+                frame: Default::default(),
                 id: name.into(),
                 fit: screen == "DP",
             },

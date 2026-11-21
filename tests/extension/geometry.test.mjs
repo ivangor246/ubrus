@@ -40,3 +40,8 @@ test('overview playback defaults to live and an overview-only pause ends on exit
     assert.equal(pauseReason(scene, false, true, false), 'covered');
     assert.equal(pauseReason({ ...scene, paused: true }, false, false, false), 'manual');
 });
+
+test('recovery posters keep the same zoom and focus on a portrait monitor', async () => {
+    const { frameBounds } = await import('../../extension/desktop/geometry.js');
+    assert.deepEqual(frameBounds({dimensions:[400,200], fit:false, frame:{x:100, y:50, zoom:200}},100,200), [-700,-100,800,400]);
+});

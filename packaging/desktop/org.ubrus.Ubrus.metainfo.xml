@@ -12,9 +12,10 @@
     <p xml:lang="ru">Добавляйте изображения, видео и GIF, просматривайте их и назначайте каждому монитору свой фон.
     Приостанавливайте анимацию и восстанавливайте выбор при входе в GNOME.</p>
   </description>
+  <url type="homepage">https://github.com/ivangor246/ubrus</url>
   <launchable type="desktop-id">org.ubrus.Ubrus.desktop</launchable>
   <provides><binary>ubrus</binary></provides>
   <developer id="org.ubrus"><name>Ubrus contributors</name></developer>
   <content_rating type="oars-1.1"/>
-  <releases><release version="0.1.0" date="2026-11-21"/></releases>
+  <releases><release version="0.2.0" date="2026-11-21"/><release version="0.1.0" date="2026-11-21"/></releases>
 </component>

@@ -1,6 +1,4 @@
-use super::portal;
-use anyhow::{Context, Result, ensure};
-use ashpd::WindowIdentifier;
+use anyhow::{Result, ensure};
 use gtk::{gio, glib, prelude::*};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,6 +29,20 @@ fn checksum(path: &Path) -> Result<String> {
 }
 
 impl SystemWallpaper {
+    pub fn identify_legacy(source: &Path, choice: &crate::library::Choice) -> Option<Self> {
+        if std::env::var_os("SNAP").is_some() {
+            return None;
+        }
+        let cache = glib::user_config_dir().join("background");
+        let (_, width, height) = gtk::gdk_pixbuf::Pixbuf::file_info(&cache)?;
+        let candidate = super::portal::system_picture(source, choice, width, height).ok()?;
+        let digest = checksum(&cache).ok()?;
+        (checksum(candidate.path()).ok()? == digest).then_some(Self {
+            digest: Some(digest),
+            ..Self::default()
+        })
+    }
+
     pub fn capture(previous: Option<&Self>, picture: &Path, library: &Path) -> Result<Self> {
         if std::env::var_os("SNAP").is_some() {
             return Ok(Self::default());
@@ -51,7 +63,7 @@ impl SystemWallpaper {
             return Ok(captured);
         }
         let digest = checksum(cache)?;
-        if previous.is_some_and(|p| p.digest.as_ref().is_none_or(|known| *known == digest)) {
+        if previous.is_some_and(|p| p.digest.as_ref() == Some(&digest)) {
             return Ok(captured);
         }
         // Other portal clients use the same filename. Preserve its contents before GNOME replaces it.
@@ -98,10 +110,7 @@ impl SystemWallpaper {
         if !light && !dark {
             return Ok(());
         }
-        if let Some(expected) = &self.digest
-            && cache.try_exists()?
-            && checksum(cache)? != *expected
-        {
+        if self.digest.is_none() || (cache.try_exists()? && self.digest.as_ref() != Some(&checksum(cache)?)) {
             return Ok(());
         }
         let unchanged = |key, value: &Option<String>| {
@@ -134,33 +143,18 @@ impl SystemWallpaper {
         Ok(())
     }
 
-    pub async fn restore(self, parent: Option<WindowIdentifier>) -> Result<()> {
+    pub async fn restore(self) -> Result<bool> {
         if std::env::var_os("SNAP").is_none() {
             return gio::spawn_blocking(move || {
                 self.restore_native(&gio::Settings::new(SCHEMA), &glib::user_config_dir().join("background"))
+                    .map(|()| true)
             })
             .await
             .map_err(|_| anyhow::anyhow!("Desktop settings worker failed"))?;
         }
-        // A confined application can replace a portal wallpaper but cannot reset host GSettings.
-        let settings = gio::Settings::new(SCHEMA);
-        let dark = gio::Settings::new("org.gnome.desktop.interface").string("color-scheme") == "prefer-dark";
-        let default_path = settings
-            .default_value(if dark { DARK } else { LIGHT })
-            .and_then(|v| v.get::<String>())
-            .and_then(|uri| gio::File::for_uri(&uri).path());
-        let blank;
-        let path = if let Some(path) = default_path.filter(|p| p.is_file()) {
-            path
-        } else {
-            blank = tempfile::NamedTempFile::new()?;
-            let pixel = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 1, 1)
-                .context("Cannot create a plain background")?;
-            pixel.fill(0x000000ff);
-            pixel.savev(blank.path(), "png", &[])?;
-            blank.path().to_owned()
-        };
-        glib::future_with_timeout(std::time::Duration::from_secs(180), portal::wallpaper(parent, &path)).await?
+        // A confined portal client cannot prove ownership of the host's shared image.
+        // Keep the host background intact when restoring an older portal assignment.
+        Ok(false)
     }
 }
 

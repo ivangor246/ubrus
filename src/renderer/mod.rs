@@ -24,7 +24,15 @@ struct Screen {
     width: i32,
     height: i32,
     fit: bool,
+    #[serde(default)]
+    frame: crate::framing::Framing,
     active: bool,
+}
+type StreamKey = (PathBuf, u16);
+impl Screen {
+    fn key(&self) -> StreamKey {
+        (self.path.clone(), self.frame.speed)
+    }
 }
 #[derive(Deserialize)]
 struct Layout {
@@ -33,11 +41,11 @@ struct Layout {
 }
 #[derive(Default)]
 struct Engine {
-    streams: BTreeMap<PathBuf, Video>,
+    streams: BTreeMap<StreamKey, Video>,
     windows: BTreeMap<i32, WallpaperSurface>,
     desired: Vec<Screen>,
     serial: u64,
-    ready: BTreeSet<PathBuf>,
+    ready: BTreeSet<StreamKey>,
 }
 fn emit(message: serde_json::Value) {
     let _ = writeln!(io::stdout().lock(), "UBRUS/1 {message}");
@@ -45,22 +53,26 @@ fn emit(message: serde_json::Value) {
 impl Engine {
     fn configure(this: &Rc<RefCell<Self>>, layout: Layout) -> Result<()> {
         let mut e = this.borrow_mut();
+        anyhow::ensure!(
+            layout.screens.iter().all(|s| s.frame.valid()),
+            "Invalid wallpaper adjustments"
+        );
         e.desired = layout.screens;
         e.serial = layout.serial;
-        let requested: BTreeSet<_> = e.desired.iter().map(|s| s.path.clone()).collect();
+        let requested: BTreeSet<_> = e.desired.iter().map(Screen::key).collect();
         for path in requested {
             if e.streams.contains_key(&path) {
                 continue;
             }
             let weak = Rc::downgrade(this);
             let key = path.clone();
-            let video = Video::new(&path, move |result| {
+            let video = Video::new(&path.0, path.1, move |result| {
                 let Some(engine) = weak.upgrade() else {
                     return;
                 };
                 // Bus callbacks and surface updates both run on the GTK main context.
                 let mut e = engine.borrow_mut();
-                if !e.desired.iter().any(|s| s.path == key) {
+                if !e.desired.iter().any(|s| s.key() == key) {
                     return;
                 }
                 match result {
@@ -83,27 +95,25 @@ impl Engine {
         let indices: BTreeSet<_> = self.desired.iter().map(|s| s.index).collect();
         self.windows.retain(|index, _| indices.contains(index));
         for screen in &self.desired {
-            if self.ready.contains(&screen.path) {
+            if self.ready.contains(&screen.key()) {
                 self.windows
                     .entry(screen.index)
                     .or_insert_with(|| WallpaperSurface::new(screen.index))
-                    .show(screen, &self.streams[&screen.path].paintable);
+                    .show(screen, &self.streams[&screen.key()].paintable);
             }
         }
 
         // During preroll, a window can still display the previous assignment.
         self.streams.retain(|path, _| {
-            self.desired.iter().any(|s| &s.path == path)
-                || self
-                    .windows
-                    .values()
-                    .any(|window| window.displayed() == Some(path.as_path()))
+            self.desired.iter().any(|s| s.key() == *path)
+                || self.windows.values().any(|window| window.displayed() == Some(path))
         });
         self.ready.retain(|key| self.streams.contains_key(key));
         for (key, stream) in &self.streams {
-            let active = self.desired.iter().any(|s| {
-                s.active && self.windows.get(&s.index).and_then(WallpaperSurface::displayed) == Some(key.as_path())
-            });
+            let active = self
+                .desired
+                .iter()
+                .any(|s| s.active && self.windows.get(&s.index).and_then(WallpaperSurface::displayed) == Some(key));
             stream.play(active)?;
         }
         self.status();
@@ -113,12 +123,13 @@ impl Engine {
         let displayed: BTreeMap<_, _> = self
             .windows
             .iter()
-            .filter_map(|(index, window)| Some((index, window.displayed()?)))
+            .filter_map(|(index, window)| Some((index, &window.displayed()?.0)))
             .collect();
         emit(json!({
             "pid": std::process::id(),
             "serial": self.serial,
             "displayed": displayed,
+            "speeds": self.windows.iter().filter_map(|(i,w)| Some((i,w.displayed()?.1))).collect::<BTreeMap<_,_>>(),
             "streams": self.streams.values().map(Video::stats).collect::<Vec<_>>(),
             "windows": self.windows.len(),
         }));

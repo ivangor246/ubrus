@@ -45,7 +45,9 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Profile::default()),
             Err(e) => return Err(e.into()),
         };
-        let mut profile: Profile = serde_json::from_reader(BufReader::new(file)).context("Invalid saved profile")?;
+        let data: serde_json::Value = serde_json::from_reader(BufReader::new(file)).context("Invalid saved profile")?;
+        let legacy = data.get("storage_version").is_none();
+        let mut profile: Profile = serde_json::from_value(data).context("Invalid saved profile")?;
         for (id, item) in profile.items.iter().chain(&profile.pending_deletions) {
             ensure!(
                 id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -57,22 +59,34 @@ impl Store {
             profile.screens.values().all(|c| profile.items.contains_key(&c.id)),
             "Missing library reference"
         );
+        for (id, item) in &mut profile.items {
+            if item.motion.is_none() && matches!(item.ext.as_str(), "gif" | "webp") {
+                item.motion = image_motion(&self.media(id, item), &item.ext).ok().flatten();
+            }
+        }
+        ensure!(
+            profile.screens.values().all(|choice| choice.frame.valid()),
+            "Invalid wallpaper adjustments"
+        );
         // Older builds applied every all-monitor still through the wallpaper portal.
-        if profile.system_wallpaper.is_none()
-            && profile
-                .screens
-                .get(ALL)
-                .is_some_and(|c| !profile.items[&c.id].animated())
+        if legacy
+            && profile.visible()
+            && profile.system_wallpaper.is_none()
+            && let Some(choice) = profile.screens.get(ALL)
+            && let Some(item) = profile.items.get(&choice.id)
+            && matches!(item.ext.as_str(), "png" | "jpg" | "jpeg" | "webp")
         {
-            profile.system_wallpaper = Some(Default::default());
+            profile.system_wallpaper =
+                crate::desktop::background::SystemWallpaper::identify_legacy(&self.media(&choice.id, item), choice);
         }
         Ok(profile)
     }
     pub fn save(&self, profile: &Profile) -> Result<()> {
         // Publish the Shell's recovery image in the same atomic write as its assignment.
         let mut saved = serde_json::to_value(profile)?;
+        saved["storage_version"] = 2.into();
         saved["wallpaper_stills"] = serde_json::json!({
-            "version": 1, "screens": self.screen_paths(profile, true)
+            "version": 1, "panel":profile.panel(), "screens": self.screen_paths(profile, true)
         });
         write_atomic(&self.profile_path(), &serde_json::to_vec_pretty(&saved)?)
     }
@@ -108,6 +122,9 @@ impl Store {
     }
     pub fn screen_paths(&self, p: &Profile, stills: bool) -> serde_json::Value {
         let mut screens = serde_json::Map::new();
+        if !p.visible() {
+            return screens.into();
+        }
         for (screen, choice) in &p.screens {
             let item = &p.items[&choice.id];
             let poster = self.thumb(&choice.id);
@@ -116,10 +133,11 @@ impl Store {
             } else {
                 self.media(&choice.id, item)
             };
+            let dimensions = gtk::gdk_pixbuf::Pixbuf::file_info(&poster).map(|(_, w, h)| [w, h]);
             screens.insert(
                 screen.clone(),
                 serde_json::json!({
-                    "path":path, "poster":poster, "fit":choice.fit, "animated":!stills && item.animated()
+                    "path":path, "poster":poster, "fit":choice.fit, "frame":choice.frame,"dimensions":dimensions, "animated":!stills && item.animated()
                 }),
             );
         }
@@ -134,7 +152,8 @@ impl Store {
         let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("").to_lowercase();
         ensure!(supported(&ext), "Unsupported media format");
         let ext = if ext == "jpeg" { String::from("jpg") } else { ext };
-        let item = Item {
+        let mut item = Item {
+            motion: None,
             name: path.file_name().unwrap_or_default().to_string_lossy().into(),
             ext,
         };
@@ -156,6 +175,7 @@ impl Store {
             progress(done, meta.len());
         }
         let id = format!("{:x}", digest.finalize());
+        item.motion = image_motion(copy.path(), &item.ext)?;
         let media = self.media(&id, &item);
         let thumb = self.thumb(&id);
         if !media.is_file() || !thumb.is_file() {
@@ -201,6 +221,15 @@ impl Store {
             tail[1]
         )
     }
+}
+fn image_motion(path: &Path, ext: &str) -> Result<Option<bool>> {
+    use gtk::prelude::PixbufAnimationExt;
+    if matches!(ext, "gif" | "webp") {
+        return Ok(Some(
+            !gtk::gdk_pixbuf::PixbufAnimation::from_file(path)?.is_static_image(),
+        ));
+    }
+    Ok(None)
 }
 fn supported(ext: &str) -> bool {
     matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp4" | "webm")

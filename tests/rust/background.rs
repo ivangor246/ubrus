@@ -37,7 +37,7 @@ fn removing_leaves_another_apps_portal_image_and_manual_changes_in_place() -> Re
     assert_eq!(settings.string(LIGHT), uri);
     saved.digest = None; // An older installation only recorded the wallpaper assignment.
     saved.restore_native(&settings, file.path())?;
-    assert!(settings.user_value(LIGHT).is_none());
+    assert_eq!(settings.string(LIGHT), uri);
     assert_eq!(settings.string(DARK), "file:///custom.png");
     Ok(())
 }
@@ -56,5 +56,28 @@ fn another_portal_clients_previous_picture_survives_the_shared_cache_being_overw
     saved.restore_native(&settings, &cache)?;
     let restored = gio::File::for_uri(&settings.string(LIGHT)).path().unwrap();
     assert_eq!(std::fs::read(restored)?, b"previous image");
+    Ok(())
+}
+
+#[test]
+fn portal_photo_uses_the_selected_edge_and_brightness() -> Result<()> {
+    use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("stripes.png");
+    let src = Pixbuf::from_mut_slice(vec![240, 0, 0, 0, 0, 200], Colorspace::Rgb, false, 8, 2, 1, 6);
+    src.savev(&path, "png", &[])?;
+    for (x, expected) in [(0, [120, 0, 0]), (100, [0, 0, 100])] {
+        let c = crate::library::Choice {
+            id: String::new(),
+            fit: false,
+            frame: crate::framing::Framing {
+                x,
+                brightness: 50,
+                ..Default::default()
+            },
+        };
+        let picture = crate::desktop::portal::system_picture(&path, &c, 1, 1)?;
+        assert_eq!(&Pixbuf::from_file(picture.path())?.read_pixel_bytes()[..3], &expected);
+    }
     Ok(())
 }

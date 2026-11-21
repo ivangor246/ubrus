@@ -18,3 +18,15 @@ fn old_profiles_follow_the_system_and_choices_round_trip() {
     assert_eq!(restored.theme, Appearance::Dark);
     assert_eq!(restored.language.locale(), Locale::Russian);
 }
+
+#[test]
+fn window_and_panel_translations_stay_in_sync() {
+    let catalog: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
+        serde_json::from_str(include_str!("../../extension/locale.json")).unwrap();
+    let english = &catalog["en"];
+    for entries in catalog.values() {
+        assert!(entries.keys().eq(english.keys()));
+        assert!(entries.values().all(|value| !value.trim().is_empty()));
+        assert!(Text::ALL.iter().all(|key| entries.contains_key(key.key())));
+    }
+}

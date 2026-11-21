@@ -11,6 +11,7 @@ import { workspaceCoverage } from './desktop/visibility.js';
 import { pauseReason } from './desktop/geometry.js';
 import { ControllerConnection, call } from './controller.js';
 import { StillCache } from './stills.js';
+import { WallpaperPanel } from './panel.js';
 import { Renderer } from './renderer.js';
 
 const DISPLAY = 'org.gnome.Mutter.DisplayConfig';
@@ -36,6 +37,8 @@ export default class Wallpaper extends Extension {
         this.attempts = 0;
         this.stills = new StillCache();
         this.scene = this.stills.recover();
+        this.panel = new WallpaperPanel(this.dir, command => this.panelAction(command));
+        this.panel.sync(this.scene.panel);
         this.monitorIds = new Map();
         this.watch(Main.layoutManager, 'monitors-changed', () => this.layout());
         this.watch(global.display, 'workareas-changed', () => this.queue());
@@ -111,9 +114,27 @@ export default class Wallpaper extends Extension {
         this.queue();
     }
 
+    panelAction(command) {
+        if (!this.controller.online) {
+            const app = Gio.DesktopAppInfo.new('org.ubrus.Ubrus.desktop') ?? Gio.DesktopAppInfo.new('ubrus_org.ubrus.Ubrus.desktop');
+            if (!app) return;
+            this.pendingPanel = command === 'open' ? null : command;
+            app.launch([],null);
+            return;
+        }
+        call('org.ubrus.Ubrus','/org/ubrus/Ubrus/Wallpaper','org.ubrus.Ubrus.Wallpaper1',
+            'Panel',new GLib.Variant('(s)',[command]),this.cancel).catch(e => console.warn(e.message));
+    }
+
     acceptScene(scene) {
         this.stills.observe(scene);
         this.scene = scene;
+        this.panel.sync(scene.panel);
+        if (this.pendingPanel) {
+            const command = this.pendingPanel;
+            this.pendingPanel = null;
+            this.panelAction(command);
+        }
         this.error = '';
         this.failedSerial = 0;
         this.restartError = '';
@@ -124,6 +145,7 @@ export default class Wallpaper extends Extension {
 
     useStills() {
         this.scene = this.stills.recover();
+        this.panel.sync(this.scene.panel);
         this.applied = 0;
         this.failedSerial = 0;
         this.stop();
@@ -187,6 +209,7 @@ export default class Wallpaper extends Extension {
                         index: m.index,
                         path: s.path,
                         fit: s.fit,
+                        frame: s.frame,
                         active: reason === 'visible',
                         width: m.width,
                         height: m.height,
@@ -253,7 +276,8 @@ export default class Wallpaper extends Extension {
                     screens.every(
                         (s) =>
                             this.rendererWindows.source(s.index) &&
-                            this.engine.displayed?.[s.index] === s.path,
+                            this.engine.displayed?.[s.index] === s.path &&
+                            (this.engine.speeds?.[s.index] ?? 100) === (s.frame?.speed ?? 100),
                     )))
                 ? this.scene.serial
                 : 0;
@@ -288,6 +312,8 @@ export default class Wallpaper extends Extension {
         this.controller.report(
             {
                 connected: true,
+                framing: true,
+                extension_build: this.metadata["build-id"] ?? "development",
                 outputs: this.outputs,
                 engine: this.engine,
                 applied: this.applied ?? 0,
@@ -303,6 +329,8 @@ export default class Wallpaper extends Extension {
         this.bridgeEnabled = false;
         if (globalThis[OWNER] === this) delete globalThis[OWNER];
         console.info('[Ubrus] Disabling desktop bridge');
+        this.panel.destroy();
+        this.pendingPanel = null;
         this.controller.close();
         this.cancel.cancel();
         this.stop();

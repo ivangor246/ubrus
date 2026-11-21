@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn animated_previews_produce_rgba_frames_and_stop_on_close() -> Result<()> {
     let ctx = gtk::glib::MainContext::new();
-    for ext in ["gif", "mp4", "webm"] {
+    for ext in ["gif", "webp", "mp4", "webm"] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/media/loop.{ext}"));
-        let playback = start(path, ext == "gif");
+        let playback = start(path, matches!(ext, "gif" | "webp"), 150);
         let rx = playback.frames.clone();
         ctx.block_on(gtk::glib::future_with_timeout(Duration::from_secs(10), async {
             for _ in 0..2 {

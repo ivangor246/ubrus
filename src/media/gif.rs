@@ -48,6 +48,7 @@ mod imp {
 }
 glib::wrapper! {pub struct Frames(ObjectSubclass<imp::Frames>) @implements gdk::Paintable;}
 pub struct Gif {
+    rate: f64,
     animation: PixbufAnimation,
     iter: RefCell<PixbufAnimationIter>,
     pub frames: Frames,
@@ -57,10 +58,11 @@ pub struct Gif {
     pub decoded: Cell<u64>,
 }
 impl Gif {
-    pub fn open(path: &Path) -> Result<Rc<Self>> {
+    pub fn open(path: &Path, speed: u16) -> Result<Rc<Self>> {
         let animation = PixbufAnimation::from_file(path)?;
         let iter = animation.iter(Some(SystemTime::UNIX_EPOCH));
         let this = Rc::new(Self {
+            rate: f64::from(speed) / 100.,
             animation,
             iter: iter.into(),
             frames: glib::Object::new(),
@@ -86,7 +88,8 @@ impl Gif {
     pub fn play(self: &Rc<Self>, active: bool) {
         if !active {
             if let Some(start) = self.started.take() {
-                self.elapsed.set(self.elapsed.get() + start.elapsed());
+                self.elapsed
+                    .set(self.elapsed.get() + start.elapsed().mul_f64(self.rate));
             }
             if let Some(id) = self.timer.take() {
                 id.remove();
@@ -103,7 +106,7 @@ impl Gif {
     fn tick(self: &Rc<Self>) {
         let Some(start) = self.started.get() else { return };
         let now = Instant::now();
-        let position = self.elapsed.get() + now.duration_since(start);
+        let position = self.elapsed.get() + now.duration_since(start).mul_f64(self.rate);
         let mut changed = self.iter.borrow().advance(SystemTime::UNIX_EPOCH + position);
         if self.iter.borrow().delay_time().is_none() {
             self.elapsed.set(Duration::ZERO);
@@ -119,6 +122,7 @@ impl Gif {
             .borrow()
             .delay_time()
             .unwrap_or(Duration::from_millis(100))
+            .div_f64(self.rate)
             .saturating_sub(now.elapsed())
             .max(Duration::from_millis(1));
         let weak = Rc::downgrade(self);

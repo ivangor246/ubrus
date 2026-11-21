@@ -19,7 +19,11 @@ pub fn set_login(enabled: bool) -> Result<()> {
     let command = if snap.is_some() {
         "ubrus".into()
     } else {
-        let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+        let exe = match super::updates::installed_executable() {
+            Some(path) => path.to_owned(),
+            None => std::env::current_exe()?,
+        };
+        let exe = exe.to_string_lossy();
         if exe.contains(['\n', '\r']) {
             bail!("Invalid executable path");
         }

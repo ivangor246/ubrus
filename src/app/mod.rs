@@ -42,7 +42,14 @@ impl SettingsSession {
     }
 
     async fn dispatch(&self, control: &Control, events: &Sender<Event>, command: Command) {
+        let (command, from_panel) = match command {
+            Command::Panel(command) => (*command, true),
+            command => (command, false),
+        };
         match command {
+            Command::Panel(_) => unreachable!(),
+            Command::Open => self.open(control, events),
+            Command::Restart => control.restart(),
             Command::Close(epoch) => self.close(epoch),
             Command::Inspect => {
                 control.signal("Inspect");
@@ -54,22 +61,28 @@ impl SettingsSession {
                     preference.apply(profile);
                     Ok(())
                 });
-                if result.is_ok() && preference.affects_playback() {
+                if result.is_ok() {
                     control.signal("Changed");
                 }
-                finish(control, events, result.map(|()| (None, None)), Text::FailedSave);
+                finish(
+                    control,
+                    events,
+                    result.map(|()| (None, None)),
+                    Text::FailedSave,
+                    from_panel,
+                );
             }
             Command::Action(action, parent, size) => {
                 let _hold = control.hold();
                 let fallback = action.failure_message();
                 let result = perform(control, events, action, parent, size).await;
-                finish(control, events, result, fallback);
+                finish(control, events, result, fallback, from_panel);
             }
         }
     }
 }
 
-pub fn run(events: Sender<Event>, commands: Receiver<Command>) -> glib::ExitCode {
+pub fn run(events: Sender<Event>, commands: Receiver<Command>, panel: Sender<Command>) -> glib::ExitCode {
     glib::set_application_name("Ubrus");
     let app = gio::Application::builder()
         .application_id(BUS)
@@ -89,7 +102,7 @@ pub fn run(events: Sender<Event>, commands: Receiver<Command>) -> glib::ExitCode
     let active = window.clone();
     let ready = events.clone();
     app.connect_startup(move |app| {
-        let c = match Control::attach(app) {
+        let c = match Control::attach(app, panel.clone()) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Ubrus: {e:#}");
@@ -108,11 +121,13 @@ pub fn run(events: Sender<Event>, commands: Receiver<Command>) -> glib::ExitCode
         }));
         let weak = Rc::downgrade(&c);
         *init.borrow_mut() = Some(c);
+        let monitors = crate::desktop::updates::watch(ready.clone());
         let commands = commands.clone();
         let events = ready.clone();
         let window = active.clone();
         let app = app.downgrade();
         glib::spawn_future_local(async move {
+            let _monitors = monitors;
             while let Ok(request) = commands.recv().await {
                 let Some(c) = weak.upgrade() else { break };
                 window.dispatch(&c, &events, request).await;

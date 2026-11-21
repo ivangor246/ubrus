@@ -15,6 +15,21 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+pub fn seek_start(pipeline: &gst::Element, speed: u16) -> Result<()> {
+    seek_at(pipeline, speed, gst::ClockTime::ZERO)
+}
+pub fn seek_at(pipeline: &gst::Element, speed: u16, position: gst::ClockTime) -> Result<()> {
+    pipeline.seek(
+        f64::from(speed) / 100.,
+        gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+        gst::SeekType::Set,
+        position,
+        gst::SeekType::None,
+        gst::ClockTime::NONE,
+    )?;
+    Ok(())
+}
+
 /// A silent playbin that releases its decoder when the last owning operation ends.
 pub(crate) struct VideoPipeline(gst::Element);
 

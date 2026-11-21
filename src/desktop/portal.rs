@@ -92,19 +92,23 @@ pub async fn wallpaper(parent: Option<WindowIdentifier>, path: &Path) -> Result<
     Ok(())
 }
 
-pub fn system_picture(path: &Path, fit: bool, width: i32, height: i32) -> Result<tempfile::NamedTempFile> {
+pub fn system_picture(
+    path: &Path,
+    choice: &crate::library::Choice,
+    width: i32,
+    height: i32,
+) -> Result<tempfile::NamedTempFile> {
     use gtk::gdk_pixbuf::{Colorspace, InterpType, Pixbuf};
     let w = width.clamp(1, 8192);
     let h = height.clamp(1, 8192);
     let src = Pixbuf::from_file(path)?;
     let src = src.apply_embedded_orientation().unwrap_or(src);
-    let sx = w as f64 / src.width() as f64;
-    let sy = h as f64 / src.height() as f64;
-    let scale = if fit { sx.min(sy) } else { sx.max(sy) };
-    let dw = f64::from(src.width()) * scale;
-    let dh = f64::from(src.height()) * scale;
-    let x = (f64::from(w) - dw) / 2.;
-    let y = (f64::from(h) - dh) / 2.;
+    let (x, y, dw, dh) = choice.frame.bounds(
+        choice.fit,
+        (src.width().into(), src.height().into()),
+        (w.into(), h.into()),
+    );
+    let scale = dw / f64::from(src.width());
     let dst = Pixbuf::new(Colorspace::Rgb, false, 8, w, h).context("Insufficient image memory")?;
     dst.fill(0x000000ff);
     let left = (x.max(0.).round() as i32).clamp(0, w - 1);
@@ -122,6 +126,15 @@ pub fn system_picture(path: &Path, fit: bool, width: i32, height: i32) -> Result
         InterpType::Bilinear,
         255,
     );
+    let dst = if choice.frame.brightness == 100 {
+        dst
+    } else {
+        let mut bytes = dst.read_pixel_bytes().as_ref().to_vec();
+        for row in bytes.chunks_mut(dst.rowstride() as usize) {
+            choice.frame.brighten(&mut row[..w as usize * 3], 3);
+        }
+        Pixbuf::from_mut_slice(bytes, Colorspace::Rgb, false, 8, w, h, dst.rowstride())
+    };
     let tmp = tempfile::Builder::new().suffix(".png").tempfile()?;
     dst.savev(tmp.path(), "png", &[])?;
     Ok(tmp)

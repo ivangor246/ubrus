@@ -13,11 +13,11 @@ Ubrus runs one controller per login session. A second launch asks the controller
 
 ## Applying a wallpaper
 
-A still image for all monitors goes through the desktop wallpaper portal. Other assignments use the extension. Shell reads a proposed scene over `org.ubrus.Ubrus.Wallpaper1`, matches its target to a monitor and reports whether it was applied. The controller commits the assignment after confirmation. The strict Snap wakes Shell through a watched file for scene changes and status requests.
+A still image for all monitors goes through the desktop wallpaper portal in the native app. A strict Snap uses the extension when connected to avoid replacing a shared system wallpaper. Other assignments use the extension. Shell reads a proposed scene over `org.ubrus.Ubrus.Wallpaper1`, matches its target to a monitor and reports whether it was applied. The controller commits the assignment after confirmation. The strict Snap wakes Shell through a watched file for scene changes and status requests.
 
-Shell launches the Rust renderer and verifies ownership before placing its windows. Each unique animation has one decoder shared by all its visible monitors. Desktop layers use posters until the corresponding frame is ready. Shell releases the renderer when the session locks.
+Shell launches the Rust renderer and verifies ownership before placing its windows. Monitors with the same media and playback rate share a decoder. Each GTK surface applies its own crop, placement and brightness. The preview, portal image and Shell recovery poster use the same normalized framing. Desktop layers use posters until the corresponding frame is ready. Shell releases the renderer when the session locks.
 
-Workspace cards clone the renderer surface directly during playback. They scale it uniformly and clip it to the card. The optional overview pause keeps the decoder and its current frame alive. Removing wallpapers clears both assignments and recovery posters. For portal-applied stills, the native controller saves the GNOME light and dark wallpaper settings and checks the portal image before restoring them.
+Workspace cards clone the renderer surface directly during playback. They scale it uniformly and clip it to the card. The optional overview pause keeps the decoder and its current frame alive. Hiding or disabling Ubrus publishes an empty visible scene while retaining assignments. Shell also caches the committed panel state and language for periods when the controller is offline. For portal-applied stills, the native controller saves the GNOME light and dark wallpaper settings and checks the portal image before restoring them.
 
 ## Persistent data
 
