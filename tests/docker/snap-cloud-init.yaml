@@ -1,0 +1,54 @@
+#cloud-config
+write_files:
+  - path: /usr/local/bin/ubrus-guest-test
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euxo pipefail
+      finish() {
+        if [[ $? != 0 ]]; then
+          journalctl -b --no-pager _COMM=gnome-shell -n 80 || true
+          journalctl -b --no-pager -k -g 'DENIED|oom-kill' -n 40 || true
+        fi
+      }
+      trap finish EXIT
+      mkdir -p /mnt/project /mnt/providers
+      mount -t 9p -o trans=virtio,version=9p2000.L,ro project /mnt/project
+      mount -t 9p -o trans=virtio,version=9p2000.L,ro providers /mnt/providers
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends snapd gnome-shell dbus-user-session \
+        python3-gi gir1.2-gtk-4.0 gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-base \
+        libgl1-mesa-dri libegl-mesa0 fonts-dejavu-core unzip python3-cairo python3-gi-cairo
+      systemctl start snapd.socket
+      snap wait system seed.loaded
+      for name in core24 mesa-2404 gnome-46-2404; do
+        snap list "$name" || snap install --dangerous "/mnt/providers/$name.snap"
+      done
+      if snap list ubrus; then
+        snap remove --purge ubrus
+      fi
+      snap install --dangerous /mnt/project/ubrus.snap
+      snap connect ubrus:gpu-2404 mesa-2404:gpu-2404
+      snap connect ubrus:gnome-46-2404 gnome-46-2404:gnome-46-2404
+      snap connections ubrus
+      loginctl enable-linger ubuntu
+      uid=$(id -u ubuntu)
+      systemctl start "user@$uid.service"
+      systemd-run --wait --pipe --collect --property=User=ubuntu --property=PAMName=login \
+        --setenv=XDG_SESSION_TYPE=wayland --setenv=XDG_SESSION_DESKTOP=gnome env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        XDG_DATA_HOME=/home/ubuntu/.local/share XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland GDK_BACKEND=wayland \
+        UBRUS_TEST_LIBRARY=/home/ubuntu/snap/ubrus/common UBRUS_TEST_DISPLAY=wayland-0 UBRUS_TEST_BINARY=/snap/bin/ubrus \
+        HOME=/home/ubuntu UBRUS_TEST_INSTALLED=1 LP_NUM_THREADS=1 GSK_RENDERER=cairo LIBGL_ALWAYS_SOFTWARE=1 bash -ec '
+        cd /home/ubuntu
+        rm -f "$XDG_DATA_HOME/gnome-shell/extensions/probe@ubrus.test"
+        mkdir -p "$XDG_DATA_HOME/gnome-shell/extensions/wallpaper@ubrus.org"
+        unzip -qo /snap/ubrus/current/share/ubrus/ubrus-extension.zip -d "$XDG_DATA_HOME/gnome-shell/extensions/wallpaper@ubrus.org"
+        /usr/bin/python3 /mnt/project/tests/session/test-session.py wayland'
+      echo UBRUS_VM_PASS >/dev/ttyS0
+runcmd:
+  - |
+    /usr/local/bin/ubrus-guest-test > /var/log/ubrus-guest.log 2>&1
+    rc=$?
+    { echo UBRUS_TEST_LOG_START; tail -150 /var/log/ubrus-guest.log; echo UBRUS_TEST_LOG_END; } > /dev/ttyS0
+    poweroff
+    exit "$rc"

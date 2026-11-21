@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.ubrus.Ubrus</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>Ubrus</name>
+  <summary>Choose still and animated wallpapers for each monitor</summary>
+  <summary xml:lang="ru">Выбирайте обычные и анимированные обои для каждого монитора</summary>
+  <description>
+    <p>Import local pictures, videos and GIFs and preview them on your GNOME desktop.
+    Assign a wallpaper to each display, pause playback, and restore your selection when you sign in.</p>
+    <p xml:lang="ru">Добавляйте изображения, видео и GIF, просматривайте их и назначайте каждому монитору свой фон.
+    Приостанавливайте анимацию и восстанавливайте выбор при входе в GNOME.</p>
+  </description>
+  <launchable type="desktop-id">org.ubrus.Ubrus.desktop</launchable>
+  <provides><binary>ubrus</binary></provides>
+  <developer id="org.ubrus"><name>Ubrus contributors</name></developer>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="0.1.0" date="2026-11-21"/></releases>
+</component>

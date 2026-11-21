@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Ubrus
+GenericName=Wallpaper Manager
+GenericName[ru]=Менеджер обоев
+Comment=Set images, videos and GIFs as your desktop background
+Comment[ru]=Устанавливайте изображения, видео и GIF на фон рабочего стола
+Exec=ubrus
+Icon=org.ubrus.Ubrus
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;background;video;monitor;
+Keywords[ru]=обои;фон;видео;монитор;
+StartupNotify=true

@@ -1,0 +1,27 @@
+name: ubrus-gnome-tests
+services:
+  gnome50:
+    build:
+      context: .
+      dockerfile: gnome50.Dockerfile
+    cpus: 1
+    mem_limit: 2g
+    tmpfs: [/run]
+    volumes:
+      - ../..:/src:ro
+      - ../artifacts/session-tests:/test-logs
+    environment:
+      UBRUS_TEST_LOG_DIR: /test-logs/gnome50
+      MUTTER_DEBUG_DUMMY_MODE_SPECS: 800x600
+  snap-vm:
+    profiles: [snap-test]
+    build:
+      context: .
+      dockerfile: snap-vm.Dockerfile
+    devices: [/dev/kvm:/dev/kvm]
+    cpus: 1
+    mem_limit: 2500m
+    volumes:
+      - ../..:/src:ro
+      - /var/lib/snapd/snaps:/providers:ro
+    tmpfs: [/tmp/ubrus-seed:size=32m]

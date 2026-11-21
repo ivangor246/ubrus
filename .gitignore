@@ -1,0 +1,13 @@
+/target/
+/dist/
+/parts/
+/prime/
+/stage/
+/.snapcraft/
+*.snap
+*.deb
+*.log
+.idea/
+.vscode/
+*.swp
+*~

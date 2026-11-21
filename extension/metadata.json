@@ -1,0 +1,7 @@
+{
+  "uuid": "wallpaper@ubrus.org",
+  "name": "Ubrus",
+  "description": "Show wallpapers from Ubrus behind desktop icons and pause hidden video outputs.",
+  "shell-version": ["46", "50"],
+  "version": 1
+}

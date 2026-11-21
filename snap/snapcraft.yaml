@@ -1,0 +1,46 @@
+name: ubrus
+base: core24
+version: '0.1.0'
+summary: Choose still and animated wallpapers for each monitor
+description: |
+  Import local images, videos and GIFs, preview them and set your GNOME desktop
+  background. For animated or per-monitor wallpapers install and enable the
+  companion GNOME Shell extension following the instructions in Diagnostics.
+grade: stable
+confinement: strict
+license: MIT OR Apache-2.0
+platforms:
+  amd64:
+apps:
+  ubrus:
+    command: bin/ubrus
+    desktop: usr/share/applications/org.ubrus.Ubrus.desktop
+    extensions: [gnome]
+    autostart: ubrus-login.desktop
+    slots: [wallpaper]
+    plugs: [opengl, wayland, x11, desktop, desktop-legacy]
+slots:
+  wallpaper:
+    interface: dbus
+    bus: session
+    name: org.ubrus.Ubrus
+parts:
+  ubrus:
+    plugin: rust
+    source: .
+    rust-channel: '1.100.0'
+    build-environment:
+      - CARGO_BUILD_JOBS: '1'
+    build-packages:
+      - libgtk-4-dev
+      - libgstreamer-plugins-base1.0-dev
+      - libdrm-dev
+      - libx11-dev
+    stage-packages:
+      - gstreamer1.0-libav
+      - webp-pixbuf-loader
+    override-build: |
+      cargo build --locked --release --jobs 1
+      install -Dm755 target/release/ubrus "$CRAFT_PART_INSTALL/bin/ubrus"
+      bash packaging/extension.sh
+      bash packaging/snap/install.sh "$CRAFT_PART_INSTALL"
