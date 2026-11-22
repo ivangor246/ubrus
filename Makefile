@@ -19,7 +19,7 @@ format:
 format-check:
 	$(rust) fmt --all -- --check
 lint:
-	$(rust) clippy --workspace --all-targets --locked -- -D warnings
+	$(rust) clippy --workspace --all-targets --all-features --locked -- -D warnings
 typecheck:
 	$(rust) check --workspace --all-targets --locked
 extension:

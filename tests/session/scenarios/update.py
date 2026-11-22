@@ -8,6 +8,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 from desktop_session import MEDIA_DIR, PROJECT_ROOT, wait_for
+from PIL import ImageChops
 from .x11_settings import SettingsWindow
 
 
@@ -49,7 +50,6 @@ def check_update(session, start_shell):
     app = session.spawn(str(exe))
     window = SettingsWindow()
     wait_for('saved theme before update', window.dark)
-    window.key('ctrl+comma')
     wait_for('controller', lambda: session.owns_name('org.ubrus.Ubrus'))
     os.replace(new / 'usr/bin/ubrus', exe)
     os.replace(
@@ -59,13 +59,16 @@ def check_update(session, start_shell):
     proc = Path(f'/proc/{app.pid}/exe')
     assert not proc.samefile(exe)
 
-    def restart():
-        if proc.samefile(exe):
-            return True
-        window.click(103, 102)
-        return False
-
-    wait_for('the running process to exec the installed image', restart, timeout=15)
+    # Opening Settings checks the replacement immediately. With no prior focus,
+    # Tab visits Library and then the update button. Wait for each visible transition.
+    for shortcut in ('ctrl+comma', 'Tab', 'Tab'):
+        before = window.capture(None)
+        window.key(shortcut)
+        wait_for(f'Settings to repaint after {shortcut}', lambda: ImageChops.difference(
+            before, window.capture(None)
+        ).getbbox())
+    window.key('Return')
+    wait_for('the running process to exec the installed image', lambda: proc.samefile(exe), timeout=15)
     restored = SettingsWindow()
     wait_for('restored dark theme', restored.dark)
     assert session.profile_path.read_bytes() == profile

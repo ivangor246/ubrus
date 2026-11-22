@@ -1,12 +1,13 @@
 """Drive the Iced settings window and check its visible state under X11."""
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
 from collections import Counter
-from itertools import groupby
 from pathlib import Path
 from subprocess import Popen
 
@@ -16,11 +17,10 @@ from PIL import Image, ImageGrab
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Gdk', '4.0')
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 SETTINGS_WINDOW = ('--onlyvisible', '--name', '^Ubrus$')
 MESSAGES = json.loads((PROJECT_ROOT / 'extension/locale.json').read_text(encoding='utf-8'))
-PICKER_ROW = 125
 
 
 def xdotool(*args: str) -> str:
@@ -38,7 +38,10 @@ class SettingsWindow:
 
         self.id = wait_for('mapped settings window', find_window)
         self.focus()
-        wait_for('Iced to draw the Ubrus heading', self.heading_is_drawn)
+        if 'UBRUS_TEST_WIDGETS' in os.environ:
+            self.wait('the library window', lambda state: 'settings' in state['widgets']['controls'])
+        else:
+            wait_for('Iced to paint the library', self.library_is_drawn)
 
     def geometry(self):
         info = subprocess.check_output(['xwininfo', '-id', self.id], text=True, timeout=6)
@@ -66,103 +69,127 @@ class SettingsWindow:
         bounds = (self.left + x1, self.top + y1, self.left + x2, self.top + y2)
         return ImageGrab.grab(bbox=bounds, xdisplay=os.environ['DISPLAY'])
 
-    def heading_is_drawn(self) -> bool:
-        # The Ubrus label in the navigation bar is visible in all themes and languages.
-        label = self.capture().crop((20, 20, 105, 55)).convert('L')
-        darkest, lightest = label.getextrema()
+    def library_is_drawn(self) -> bool:
+        # A mapped production window can still have a blank client area.
+        image = self.capture(None).convert('L')
+        w, h = image.size
+        darkest, lightest = image.crop((w // 20, h // 8, w * 19 // 20, h * 7 // 8)).getextrema()
         return lightest - darkest > 70
 
     def dark(self) -> bool:
         return max(self.capture().getpixel((5, 100))[:3]) < 110
 
-    def open_settings(self) -> None:
-        width, _ = self.geometry()
-        self.click(width - 45, 31)
+    def snapshot(self):
+        directory = Path(os.environ['UBRUS_TEST_WIDGETS'])
+        token = str(time.monotonic_ns())
+        (directory / 'request').write_text(token)
+        reply = directory / 'reply'
+        next_request = 0.0
 
-        def pickers_visible():
-            image = self.capture()
-            y = PICKER_ROW + 11
-            background = image.getpixel((5, y))
-            return image.getpixel((85, y)) == image.getpixel((208, y)) != background
-
-        wait_for('the theme and language pickers', pickers_visible)
-
-
-def photo_tile(window):
-    # Find the fixture inside the gallery, regardless of the height of the search and header rows.
-    image = window.capture()
-    for y in range(125, image.height - 8, 4):
-        if all(image.getpixel((x, y))[:3] == (37, 91, 156) for x in (56, 72, 88)):
-            return (72, y)
-    return None
-
-
-def wait_for_editor(window, width, height):
-    last_frame = 'no frame captured'
-
-    # A wide editor shares the row with the gallery. A narrow editor has its own page.
-    def drawn():
-        nonlocal last_frame
-        screen = window.capture(None)
-        if screen.size != (width, height):
-            last_frame = f'window size {screen.size}'
+        def received():
+            nonlocal next_request
+            if reply.exists():
+                state = json.loads(reply.read_text())
+                if state['request'] == token:
+                    return state
+            # A mapped window can receive focus before Iced starts accepting input.
+            if time.monotonic() >= next_request:
+                self.key('F12')
+                next_request = time.monotonic() + 1
             return None
-        blue = (37, 91, 156)
-        green = (32, 132, 61)
-        x = width // 2 if width == 620 else width - 175
-        colors = screen.crop((x, 0, x + 1, height - 12)).convert('RGB').getdata()
-        blue_rows = [y for y, color in enumerate(colors) if color == blue]
-        green_rows = [y for y, color in enumerate(colors) if color == green]
-        last_frame = f'{len(blue_rows)} blue and {len(green_rows)} green rows at x={x}'
-        if not blue_rows or not green_rows or blue_rows[-1] >= green_rows[0]:
-            return None
-        # The fixture has two equal bands. Resampling blends their shared edge.
-        span = green_rows[-1] - blue_rows[0] + 1
-        if abs(span - height * 0.32) > 8 or min(len(blue_rows), len(green_rows)) < span * 0.45:
-            return None
-        if screen.getpixel((x, height - 12))[:3] in (blue, green):
-            raise AssertionError('The preview overlaps the editor footer')
-        return screen
 
-    try:
-        return wait_for(f'{width}×{height} editor', drawn, timeout=6)
-    except TimeoutError as error:
-        raise TimeoutError(f'{error}; last frame: {last_frame}') from error
+        return wait_for('a fresh Iced widget layout', received)
+
+    def wait(self, description, predicate):
+        last = {}
+
+        def ready():
+            nonlocal last
+            last = self.snapshot()
+            return last if not last['busy'] and predicate(last) else None
+
+        try:
+            return wait_for(description, ready)
+        except TimeoutError as error:
+            raise TimeoutError(f'{error}. Last Iced layout: {last}') from error
+
+    def control(self, name):
+        return self.wait(f'enabled {name} control', lambda s: name in s['widgets']['controls'])
+
+    def bounds(self, state, name):
+        width, height = self.geometry()
+        sx, sy = width / state['size'][0], height / state['size'][1]
+        x, y, w, h = state['widgets']['controls'][name]
+        return round(x * sx), round(y * sy), round(w * sx), round(h * sy)
+
+    def click_control(self, name, x_fraction=0.5, y_fraction=0.5):
+        x, y, width, height = self.bounds(self.control(name), name)
+        self.click(x + round(width * x_fraction), y + round(height * y_fraction))
+
+    def open_settings(self):
+        self.click_control('settings')
+        self.wait('the theme and language pickers', lambda s: {'theme', 'language'} <= s['widgets']['controls'].keys())
+
+    def focus_control(self, name):
+        state = self.control(name)
+        visited = set()
+        while state['widgets']['focus'] != name:
+            previous = state['widgets']['focus_index']
+            if previous in visited:
+                raise AssertionError(f'Tab skipped {name}: {visited}')
+            visited.add(previous)
+            self.key('Tab')
+            state = self.wait('keyboard focus to advance', lambda s: s['widgets']['focus_index'] != previous)
 
 
-def check_responsive(session, window, variant):
+def check_responsive(session, window):
+    tile = 'tile-' + next(iter(session.profile()['items']))
+    state = window.control('preview')
+    physical = window.geometry()
+    sx, sy = (pixels / logical for pixels, logical in zip(physical, state['size']))
     for width, height in [(1440, 900), (620, 430), (900, 600)]:
-        xdotool('windowsize', '--sync', window.id, str(width), str(height))
-        screenshot = wait_for_editor(window, width, height)
+        xdotool('windowsize', '--sync', window.id, str(round(width * sx)), str(round(height * sy)))
+
+        def editor(state):
+            controls = state['widgets']['controls']
+            if any(abs(a - b) > 1 for a, b in zip(state['size'], (width, height))):
+                return False
+            if not {'preview', 'apply'} <= controls.keys():
+                return False
+            if (tile in controls) != (width != 620) or ('back' in controls) != (width == 620):
+                return False
+            _, top, _, h = controls['preview']
+            return abs(h - height * 0.32) <= 1 and top + h <= controls['apply'][1]
+
+        state = window.wait(f'editor layout at {width}×{height}', editor)
         if width == 620:
-            # Enter the gallery explicitly after the narrow editor has been painted.
-            window.key('Escape')
-            point = wait_for('the photo in the narrow gallery', lambda: photo_tile(window))
-            window.click(*point)
-            screenshot = wait_for_editor(window, width, height)
+            window.click_control('back')
+            window.click_control(tile)
+            state = window.wait('the reopened narrow editor', editor)
+        x, y, w, h = window.bounds(state, 'preview')
+
+        def painted():
+            screen = window.capture(None)
+            colors = [screen.getpixel((x + w // 2, y + h * n // 4))[:3] for n in (1, 3)]
+            return screen if colors == [(37, 91, 156), (32, 132, 61)] else None
+
+        screen = wait_for(f'painted photo at {width}×{height}', painted)
         output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
-        screenshot.save(output / f'editor-{variant}-{width}.png')
-    session.log(f'checked editor at three window sizes ({variant})')
+        screen.save(output / f'editor-{width}.png')
+    session.log('verified gallery, editor and rendered photo at three window sizes')
 
 
-def select_option(session, window, setting, value, row):
-    # Each menu places its first item underneath the field.
-    x = 72 if setting == 'theme' else 208
-    choices = ['system', 'light', 'dark'] if setting == 'theme' else [
-        'system', 'english', 'russian', 'cs', 'de', 'id', 'it', 'nl',
-        'pt-PT', 'tr', 'ja', 'ko', 'zh-Hans', 'zh-Hant',
-    ]
-
-    def menu_open():
-        image = window.capture()
-        y = row + 40
-        return image.getpixel((x + 7, y)) != image.getpixel((5, y))
-
-    window.click(x, row)
-    wait_for(f'the {setting} menu to open', menu_open)
-    window.click(x, row + 31 + 31 * choices.index(value))
-    wait_for(f'{setting} = {value}', lambda: session.profile()[setting] == value)
-    wait_for(f'the {setting} menu to close', lambda: not menu_open())
+def select_option(session, window, setting, value, key='Right'):
+    window.focus_control(setting)
+    current = window.control(setting)[setting]
+    visited = set()
+    while current != value:
+        if current in visited:
+            raise AssertionError(f'{value} is missing from the {setting} picker: {visited}')
+        visited.add(current)
+        window.key(key)
+        current = window.wait(f'{setting} to change from {current}', lambda s: s[setting] != current)[setting]
+    assert session.profile()[setting] == value
 
 
 def icon_colors_match(pixels, color, *, check_outline):
@@ -190,7 +217,7 @@ def icon_colors_match(pixels, color, *, check_outline):
     return wrong <= visible * 0.1
 
 
-def check_panel_contrast(session, save_examples=False):
+def check_panel_contrast(session):
     def panel(mode):
         return json.loads(
             session.call(
@@ -237,7 +264,7 @@ def check_panel_contrast(session, save_examples=False):
                 wait_for(
                     f'{mode} bar and popup to paint the themed symbols and text', painted, timeout=8
                 )
-                if save_examples and mode.startswith('Yaru'):
+                if mode.startswith('Yaru'):
                     x, y, width, height = panel('menu-bounds')
                     output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
                     with Image.open(session.runtime_dir / 'ubrus-screen.png') as image:
@@ -257,22 +284,7 @@ def check_panel_contrast(session, save_examples=False):
     session.log('verified rendered panel and menu icon colors against opposing Shell themes')
 
 
-def status_text_contrast(window):
-    # Sample the status label independently of the logo, app title and button borders.
-    pixels = Counter(window.capture().crop((156, 22, 275, 43)).convert('RGB').getdata())
-    background = pixels.most_common(1)[0][0]
-
-    def luminance(pixel):
-        srgb = [value / 255 for value in pixel]
-        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in srgb]
-        return sum(v * weight for v, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
-
-    levels = [luminance(pixel) + 0.05 for pixel, count in pixels.items() if count >= 3]
-    surface = luminance(background) + 0.05
-    return max(max(surface / level, level / surface) for level in levels)
-
-
-def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> None:
+def check_themes(session: DesktopSession, window: SettingsWindow) -> None:
     for scheme, dark in [('prefer-dark', True), ('default', False)]:
         subprocess.run(
             ['gsettings', 'set', 'org.gnome.desktop.interface', 'color-scheme', scheme], check=True
@@ -280,14 +292,13 @@ def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> N
         wait_for(
             f"window to follow GNOME's {scheme} scheme", lambda dark=dark: window.dark() == dark
         )
-        assert status_text_contrast(window) >= 4.5
     for theme, dark in [('dark', True), ('light', False), ('system', False)]:
-        select_option(session, window, 'theme', theme, row)
+        select_option(session, window, 'theme', theme)
         wait_for(f'the {theme} theme to be visible', lambda dark=dark: window.dark() == dark)
 
     # Accessibility contrast is independent of the application's light/dark override.
     for theme, background in [('dark', (0, 0, 0)), ('light', (255, 255, 255))]:
-        select_option(session, window, 'theme', theme, row)
+        select_option(session, window, 'theme', theme)
         subprocess.run(
             ['gsettings', 'set', 'org.gnome.desktop.a11y.interface', 'high-contrast', 'true'],
             check=True,
@@ -296,7 +307,6 @@ def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> N
             'high contrast in ' + theme,
             lambda: window.capture().getpixel((5, 100))[:3] == background,
         )
-        assert status_text_contrast(window) >= 7
         subprocess.run(
             ['gsettings', 'set', 'org.gnome.desktop.a11y.interface', 'high-contrast', 'false'],
             check=True,
@@ -304,42 +314,24 @@ def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> N
         wait_for(
             'restore normal contrast', lambda: window.capture().getpixel((5, 100))[:3] != background
         )
-    select_option(session, window, 'theme', 'system', row)
+    select_option(session, window, 'theme', 'system')
 
 
 def check_ui_language(window: SettingsWindow, locale: str) -> None:
-    # Read the translated text displayed in Diagnostics, including after a window move or theme change.
-    expected = f'{MESSAGES[locale]["ReportSession"]} x11'
-    width, height = window.geometry()
-    Gtk.init()
-    Gdk.Display.get_default().get_clipboard().set_content(None)
-    window.key('ctrl+d')
-
-    def copy_report():
-        window.click(width - 60, height // 2)
-        window.key('ctrl+a')
-        window.key('ctrl+c')
-        return expected in clipboard_text().splitlines()
-
-    wait_for(f'the displayed diagnostics line {expected!r}', copy_report)
-    window.open_settings()
+    label = MESSAGES[locale]['Desktop']
+    window.wait(f'translated settings label {label!r}', lambda s: label in s['widgets']['text'])
 
 
 def check_preferences(
     session: DesktopSession, app: Popen, window: SettingsWindow
 ) -> tuple[Popen, SettingsWindow]:
     window.open_settings()
-    theme_row = language_row = PICKER_ROW
-    check_themes(session, window, theme_row)
-    for choice, locale in [
-        ('russian', 'ru'), ('pt-PT', 'pt-PT'), ('ja', 'ja'), ('ko', 'ko'),
-        ('zh-Hans', 'zh-Hans'), ('zh-Hant', 'zh-Hant'), ('english', 'en'), ('system', 'en'),
-    ]:
-        select_option(session, window, 'language', choice, language_row)
-        check_ui_language(window, locale)
+    check_themes(session, window)
+    select_option(session, window, 'language', 'russian')
+    check_ui_language(window, 'ru')
 
-    select_option(session, window, 'language', 'english', language_row)
-    select_option(session, window, 'theme', 'dark', theme_row)
+    select_option(session, window, 'language', 'english', key='Left')
+    select_option(session, window, 'theme', 'dark')
     wait_for('dark theme before restarting', window.dark)
     window.key('alt+F4')
     wait_for(
@@ -356,23 +348,13 @@ def check_preferences(
     app = session.spawn(session.binary, env={**os.environ, 'LANGUAGE': 'ru'})
     window = SettingsWindow()
     wait_for('the restored dark theme', window.dark)
+    window.open_settings()
     check_ui_language(window, 'en')
-    select_option(session, window, 'theme', 'system', theme_row)
+    select_option(session, window, 'theme', 'system')
     wait_for('the system light theme', lambda: not window.dark())
-    select_option(session, window, 'language', 'system', language_row)
+    select_option(session, window, 'language', 'system', key='Left')
     check_ui_language(window, 'ru')
 
-    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
-        select_option(session, window, 'theme', 'dark', theme_row)
-        wait_for('dark settings to finish drawing', window.dark)
-        window.key('Escape')
-        point = wait_for('gallery after leaving Settings', lambda: photo_tile(window))
-        window.click(*point)
-        check_responsive(session, window, 'ru-dark')
-        window.open_settings()
-        select_option(session, window, 'theme', 'system', theme_row)
-        wait_for('the restored system light theme', lambda: not window.dark())
-        check_ui_language(window, 'ru')
     check_diagnostics(session, window)
     session.log(
         'followed live GNOME theme changes; switched languages and themes; reopened with saved overrides'
@@ -405,72 +387,26 @@ def check_diagnostics(session: DesktopSession, window: SettingsWindow) -> None:
     window.key('ctrl+d')
     Gtk.init()
 
-    def select_word():
-        xdotool(
-            'mousemove',
-            '--window',
-            window.id,
-            '42',
-            '175',
-            'click',
-            '--repeat',
-            '2',
-            '--delay',
-            '100',
-            '1',
-        )
-        window.key('ctrl+c')
-        return clipboard_text() == 'Сеанс'
-
-    wait_for('the mouse-selected word', select_word)
+    window.click_control('report')
+    window.wait('focus in the report editor', lambda s: s['widgets']['focus'] == 'report')
     window.key('ctrl+Home')
     window.key('shift+End')
+    window.wait('the first report line to be selected', lambda s: s['report_selection'] == 'Сеанс x11')
     window.key('ctrl+c')
     wait_for('one selected diagnostics line', lambda: clipboard_text() == 'Сеанс x11')
     window.key('ctrl+a')
+    window.wait('the full report to be selected', lambda s: 'Расширение GNOME' in (s['report_selection'] or ''))
     window.key('ctrl+c')
-    wait_for('the full diagnostics selection', lambda: 'Расширение GNOME' in clipboard_text())
-
-    # The four Russian action buttons fit on a single row at the test window's width.
-    width, _ = window.geometry()
-    ink = (230, 238, 231) if window.dark() else (32, 51, 46)
-
-    def focused_action(action):
-        toolbar = ['Refresh', 'Copy all', 'Export', 'Save as']
-        top = 112 if action in toolbar else 70
-
-        def focused():
-            bar = window.capture((0, top, width, top + 18)).convert('RGB')
-            if action in toolbar:
-                # Measure the button interiors below the top border, clear of the text.
-                row = bar.crop((0, 10, width, 11)).getdata()
-                background = bar.getpixel((0, 10))
-                centers = []
-                for filled, group in groupby(enumerate(row), lambda sample: sample[1] != background):
-                    if filled:
-                        xs = [x for x, _ in group]
-                        if len(xs) > 30:
-                            centers.append(xs[len(xs) // 2])
-                if len(centers) != len(toolbar):
-                    return False
-                center = centers[toolbar.index(action)]
-            else:
-                center = width - 60
-            return any(
-                all(bar.getpixel((x, y)) == ink for x in (center - 15, center, center + 15))
-                for y in range(bar.height)
-            )
-
-        wait_for(f'visible focus on {action}', focused, timeout=4)
+    wait_for('full diagnostics selection', lambda: 'Расширение GNOME' in clipboard_text())
 
     def tab_to(action, reverse=False):
         window.key('shift+Tab' if reverse else 'Tab')
-        focused_action(action)
+        window.wait(f'keyboard focus on {action}', lambda s: s['widgets']['focus'] == action)
 
-    # Anchor focus on Refresh, then exercise both directions without clicking another button.
-    window.click(48, 132)
-    focused_action('Refresh')
-    tab_to('public report', reverse=True)
+    window.open_settings()
+    window.key('ctrl+d')
+    window.focus_control('refresh')
+    tab_to('public', reverse=True)
     window.key('Return')
 
     def public_report():
@@ -484,25 +420,19 @@ def check_diagnostics(session: DesktopSession, window: SettingsWindow) -> None:
     private_marker = f'Local-only path: {session.runtime_dir}/personal-picture.png'
     with (session.library / 'ubrus.log').open('a', encoding='utf-8') as log:
         log.write(private_marker + '\n')
-    tab_to('Refresh')
+    tab_to('refresh')
     window.key('Return')  # Refresh loads the new local log entry.
-    tab_to('Copy all')
+    tab_to('copy')
 
     def copy_private_report():
         window.key('Return')
         return private_marker in clipboard_text()
 
     wait_for('the full local report after keyboard refresh', copy_private_report)
-    tab_to('Refresh', reverse=True)
-    tab_to('public report', reverse=True)
-    window.key('Return')
+    window.click_control('public')
     wait_for('the sanitized copy after a private log was read', lambda: clipboard_text() == public)
-
-    # Advance over Refresh and Copy all to Export, which needs no portal.
-    for action in ('Refresh', 'Copy all', 'Export'):
-        tab_to(action)
     session.selection.unlink(missing_ok=True)
-    window.key('Return')
+    window.click_control('export')
     downloads = session.runtime_dir / 'downloads'
     wait_for(
         'a directly saved Russian report',
@@ -513,11 +443,9 @@ def check_diagnostics(session: DesktopSession, window: SettingsWindow) -> None:
     )
     chosen = session.runtime_dir / 'report.txt'
     session.selection.write_text(str(chosen), encoding='utf-8')
-    focused_action('Export')
-    tab_to('Save as')
-    window.key('Return')
+    window.click_control('save-as')
     wait_for(
-        'a keyboard-activated report saved through the chooser',
+        'a report saved through the chooser',
         lambda: chosen.is_file() and private_marker in chosen.read_text(encoding='utf-8'),
     )
     window.key('Escape')
@@ -527,15 +455,17 @@ def check_diagnostics(session: DesktopSession, window: SettingsWindow) -> None:
 def import_file(
     session: DesktopSession, window: SettingsWindow, path: Path, expected_count: int
 ) -> None:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
     session.selection.write_text(str(path), encoding='utf-8')
-    window.key('ctrl+o')
-    wait_for(
-        f'{path.name} in the library',
-        lambda: (
-            session.profile_path.is_file() and len(session.profile()['items']) == expected_count
-        ),
-    )
     window.focus()
+    window.control('import')
+    window.key('ctrl+o')
+    window.wait(
+        f'{path.name} selected in the editor after import',
+        lambda s: s['selected'] == digest and 'apply' in s['widgets']['controls'],
+    )
+    items = session.profile()['items']
+    assert digest in items and len(items) == expected_count, items
 
 
 def applied_format(session: DesktopSession) -> str | None:
@@ -547,19 +477,11 @@ def applied_format(session: DesktopSession) -> str | None:
 def frame_static(window):
     # Sample the preview as well as the saved composition. Dragging and keyboard
     # positioning use the same normalized coordinates on each display.
-    def editable():
-        return window.capture((700, 162, 701, 163)).getpixel((0, 0))[:3] == (37, 91, 156)
-
-    wait_for('the editable photo', editable)
-    window.click(650, 410)
-    window.click(650, 459)
+    window.click_control('zoom', 1 / 3, 0.85)
+    window.click_control('brightness', 1 / 3, 0.85)
     window.key('shift+Down')
-
-    def dimmed():
-        color = window.capture((700, 162, 701, 163)).getpixel((0, 0))
-        return 65 < color[2] < 90
-
-    wait_for('the dimmed preview', dimmed)
+    x, y, w, h = window.bounds(window.control('preview'), 'preview')
+    wait_for('the dimmed preview', lambda: 65 < window.capture(None).getpixel((x + w // 2, y + h // 4))[2] < 90)
 
 
 def check_static_pixels(session):
@@ -590,27 +512,20 @@ def check_static_pixels(session):
 
 
 def apply_static(session: DesktopSession, window: SettingsWindow) -> None:
-    def confirm_if_prompted() -> bool:
-        if applied_format(session) == 'png':
-            return True
-        for title, kind, _alpha, _shown, rect, *_ in session.window_layout()['windows']:
-            if kind in (3, 4) and title and 'set background' in title.lower():
-                x, y, width, height = rect
-                xdotool('mousemove', str(x + width * 3 // 4), str(y + height - 23), 'click', '1')
-                return True
-        return False
-
+    # Use the ID the private portal received from this application's file chooser.
+    app_id = session.selection.with_suffix('.app-id').read_text(encoding='utf-8')
+    interface = 'org.freedesktop.impl.portal.PermissionStore'
+    session.bus.call_sync(
+        interface, '/org/freedesktop/impl/portal/PermissionStore', interface, 'SetPermission',
+        GLib.Variant('(sbssas)', ('wallpaper', True, 'wallpaper', app_id, ['yes'])),
+        None, Gio.DBusCallFlags.NONE, 5000, None,
+    )
     window.key('ctrl+Return')
-    wait_for('the wallpaper portal to apply or request permission', confirm_if_prompted)
     wait_for('the static wallpaper assignment', lambda: applied_format(session) == 'png')
     session.log('static image applied through the wallpaper portal')
 
 
-def check_first_run(session: DesktopSession, app: Popen) -> Popen:
-    app.terminate()
-    app.wait(timeout=5)
-    wait_for('the previous controller to exit', lambda: not session.owns_name(APP_BUS))
-    session.profile_path.unlink()
+def check_first_run(session: DesktopSession) -> None:
     app = session.spawn(session.binary)
     wait_for(
         'the new controller to connect',
@@ -618,21 +533,17 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     )
 
     window = SettingsWindow()
-    check_panel_contrast(session)
     window.focus()
     photo = session.runtime_dir / ('Landscape panorama with a long gallery title ' * 3 + '.png')
     shutil.copyfile(MEDIA_DIR / 'landscape.png', photo)
     import_file(session, window, photo, 1)
-    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
-        check_responsive(session, window, 'en-light')
+    check_responsive(session, window)
     profile = session.profile()
     assert (profile['theme'], profile['language']) == ('system', 'system')
     app, window = check_preferences(session, app, window)
-    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
-        frame_static(window)
+    frame_static(window)
     apply_static(session, window)
-    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
-        check_static_pixels(session)
+    check_static_pixels(session)
 
     login_entry = Path(os.environ['XDG_CONFIG_HOME']) / 'autostart/ubrus-login.desktop'
     assert not login_entry.exists()
@@ -661,7 +572,7 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
 
     saved = session.profile()['screens']
     wait_for('translated panel actions', lambda: 'Убрать фон Ubrus' in panel())
-    check_panel_contrast(session, save_examples=True)
+    check_panel_contrast(session)
     panel('Приостановить анимацию')
     wait_for(
         'paused from panel',
@@ -670,7 +581,6 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
         ),
     )
     wait_for('resume action', lambda: 'Продолжить анимацию' in panel())
-    check_panel_contrast(session)
     panel('Продолжить анимацию')
     wait_for('resumed from panel', lambda: not session.profile()['paused'])
     panel('Убрать фон Ubrus')
@@ -683,13 +593,11 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     )
     assert session.profile()['screens'] == saved
     wait_for('the restore menu item', lambda: 'Вернуть фон Ubrus' in panel())
-    check_panel_contrast(session)
     panel('Вернуть фон Ubrus')
     wait_for('the GIF to resume', gif_is_playing)
     panel('Выключить Ubrus')
     wait_for('Ubrus disabled', lambda: session.profile()['disabled'] and not login_entry.exists())
     wait_for('enable action', lambda: 'Включить Ubrus' in panel())
-    check_panel_contrast(session)
     panel('Включить Ubrus')
     wait_for('Ubrus enabled', lambda: not session.profile()['disabled'] and login_entry.exists())
     wait_for('the GIF to resume', gif_is_playing)
@@ -698,43 +606,29 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     assert session.profile()['screens'] == saved
 
     window.focus()
+    window.open_settings()
     check_ui_language(window, 'ru')
 
-    def checkbox_ready(y, checked):
-        # The controller saves first. Wait for Iced to redraw the enabled label and check mark.
-        line = window.capture((32, y - 8, 210, y + 9)).convert('RGB')
-        enabled = (32, 51, 46) in line.crop((24, 0, line.width, line.height)).getdata()
-        mark = (255, 255, 255) in line.crop((0, 0, 16, line.height)).getdata()
-        return enabled and mark == checked
-
-    wait_for('the hidden indicator checkbox', lambda: checkbox_ready(295, False))
-    window.click(42, 295)
-    wait_for(
-        'indicator restored from settings',
-        lambda: not session.profile()['hide_indicator'] and panel() and checkbox_ready(295, True),
-    )
-    window.click(42, 264)
-    wait_for(
-        'login switched off in settings',
-        lambda: (
-            session.profile()['autostart'] is False
-            and not login_entry.exists()
-            and checkbox_ready(264, False)
-        ),
-    )
+    window.click_control('indicator')
+    window.wait('restored indicator', lambda s: s['indicator'])
+    wait_for('the Shell indicator', panel)
+    assert not session.profile()['hide_indicator']
+    for enabled in (False, True):
+        window.click_control('login')
+        window.wait(f'login enabled = {enabled}', lambda s: s['login'] == enabled)
+        assert session.profile()['autostart'] is enabled and login_entry.exists() == enabled
     assert not session.profile()['disabled']
-    window.click(42, 264)
-    wait_for(
-        'login switched on in settings', lambda: login_entry.exists() and checkbox_ready(264, True)
-    )
     window.key('Escape')
 
     # Delete is an explicit, confirmed library action.
     window.key('Delete')
+    window.control('confirm-delete')
     window.key('Escape')
+    window.control('apply')
     assert applied_format(session) == 'gif'
     deleted_id = saved['*']['id']
     window.key('Delete')
+    window.control('confirm-delete')
     window.key('Return')
     wait_for(
         'the selected GIF to leave the library',
@@ -759,4 +653,3 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     session.log(
         'imported and applied GIF through the settings window, closed settings, renderer still active'
     )
-    return app

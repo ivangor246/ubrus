@@ -64,8 +64,11 @@ def animation(session: DesktopSession, ext: str, start_controller) -> None:
     save_profile(session, {digest: dict(name=ext, ext=ext, motion=True)}, {'*': dict(id=digest, fit=True)})
     launch = time.monotonic()
     start_controller(session)
-    first = session.snapshot()['engine']
-    assert first['streams'][0]['rendered'] > 0 and first['displayed']
+    def first_frame():
+        engine = session.snapshot()['engine']
+        return engine if engine['displayed'] and engine['streams'] and engine['streams'][0]['rendered'] > 0 else None
+
+    first = wait_for('a published animation frame', first_frame)
     session.log(f'1080p {ext}: first published frame observed {time.monotonic() - launch:.2f}s after controller launch')
     start, cpu, _ = process_usage(first['pid'])
     time.sleep(int(os.getenv('UBRUS_BENCH_ACTIVE_SECONDS', '10')))

@@ -6,13 +6,13 @@ Run one target at a time from the repository root. Start with `make check` for f
 
 | Command | What it tests |
 | --- | --- |
-| `make test-controller` | X11 editor at three sizes, portal dialogs and panel actions with a test renderer |
+| `make test-controller` | X11 editor layout, preferences, keyboard navigation, portal dialogs and Shell panel actions with a test renderer |
 | `make test-renderer` | X11 renderer framing and playback rates with a test controller |
 | `make test-integration` | GNOME Wayland with two virtual monitors, pausing, monitor rearrangement and recovery |
-| `make test-integration SESSION=x11` | Full X11 session, including import, preferences and report export |
+| `make test-integration SESSION=x11` | Full X11 session with real playback, multi-file import, extension restart and controller recovery |
 | `make test-update` | Same-version DEB replacement and settings recovery |
 
-Sessions use private XDG directories and D-Bus. Logs are in `tests/artifacts/session-tests/`. Set `XVFB` for a custom Xvfb binary or `UBRUS_TEST_BINARY` to test a specific executable. The CI workflow lists the Ubuntu desktop packages needed to run these tests. [CI workflow](https://github.com/ivangor246/ubrus/blob/main/.github/workflows/ci.yml)
+Sessions use private XDG directories and D-Bus. Logs are in `tests/artifacts/session-tests/`. Set `XVFB` for a custom Xvfb binary or `UBRUS_TEST_BINARY` to test a specific executable. The controller target builds with the `ui-test` feature. Its private session reads the visible widget bounds and keyboard focus from Iced and sends real X11 input. A custom controller binary needs that feature too. CI exercises the editor at 125% scale. The CI workflow lists the Ubuntu desktop packages needed to run these tests. [CI workflow](https://github.com/ivangor246/ubrus/blob/main/.github/workflows/ci.yml)
 
 ## Installed packages
 

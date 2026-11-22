@@ -47,7 +47,11 @@ def report_battery(session, before: dict[str, int], elapsed: float, state: str) 
 
 
 def check_decoder(session: DesktopSession) -> int:
-    initial = session.snapshot()
+    def shared_decoder():
+        state = session.snapshot()
+        return state if len(state['engine']['streams']) == 1 else None
+
+    initial = wait_for('the shared decoder', shared_decoder)
     pid = initial['engine']['pid']
     if not session.installed:
         assert os.path.samefile(f'/proc/{pid}/exe', session.binary), (
@@ -62,21 +66,26 @@ def check_decoder(session: DesktopSession) -> int:
     (first_stream,) = initial['engine']['streams']
     battery = battery_energy()
     start, initial_cpu, _ = process_usage(pid)
-    seconds = int(os.getenv("UBRUS_BENCH_ACTIVE_SECONDS", "3"))
-    time.sleep(seconds)
-    later = session.snapshot()
-    end, final_cpu, rss = process_usage(pid)
-    percent_cpu = 100 * (final_cpu - initial_cpu) / (end - start)
-    report_battery(session, battery, end - start, 'playing')
-    session.log(f'1080p/30 over {seconds}s, renderer CPU {percent_cpu:.1f}% of one core, RSS {rss:.1f} MiB')
+    seconds = int(os.getenv('UBRUS_BENCH_ACTIVE_SECONDS', '0'))
+    if seconds:
+        time.sleep(seconds)
+
+    def advanced():
+        sample = session.snapshot()
+        streams = sample['engine']['streams']
+        if len(streams) == 1 and streams[0]['decoded'] > first_stream['decoded']:
+            return sample
+        return None
+
+    later = wait_for('one shared decoder delivering frames', advanced)
     (stream,) = later['engine']['streams']
-    decoded = stream['decoded'] - first_stream['decoded']
-    assert decoded > 0, stream
-    if os.getenv('UBRUS_BENCH_ACTIVE_SECONDS'):
+    if seconds:
+        end, final_cpu, rss = process_usage(pid)
+        report_battery(session, battery, end - start, 'playing')
         rendered = stream['rendered'] - first_stream['rendered']
         dropped = stream['dropped'] - first_stream['dropped']
         assert rendered > 0 and dropped >= 0, (first_stream, stream)
-        session.log(f'active interval: {decoded} decoded, {rendered} rendered, {dropped} dropped')
+        session.log(f'{end-start:.1f}s: {rendered} rendered, {dropped} dropped, CPU {100*(final_cpu-initial_cpu)/(end-start):.1f}%, RSS {rss:.1f} MiB')
     count = len(later['outputs'])
     session.log(
         f'{count} display(s), one {stream["decoder"]} decoder, '
@@ -108,14 +117,16 @@ def check_workspace_previews(session: DesktopSession) -> None:
     try:
         def scaled_cards() -> list[dict] | None:
             cards = json.loads(session.probe('Overview')[0])
-            return cards if any(0 < c['size'][0] < c['source'][0] - 2 for c in cards) else None
+            for card in cards:
+                sw, sh = card['source']
+                width, height = card['size']
+                if not card['live'] or min(sw, sh, width, height) <= 0:
+                    return None
+                if abs(width / sw - height / sh) > 2 / min(sw, sh):
+                    return None
+            return cards if any(c['size'][0] < c['source'][0] - 2 for c in cards) else None
 
-        cards = wait_for('scaled workspace previews', scaled_cards)
-        for card in cards:
-            sw, sh = card['source']
-            width, height = card['size']
-            assert abs(width / sw - height / sh) <= 2 / min(sw, sh), (sw, sh, width, height)
-            assert card['live'], 'The workspace must paint the live renderer surface'
+        cards = wait_for('scaled live workspace previews with the monitor aspect ratio', scaled_cards)
 
         def sample_card() -> bytes:
             session.probe('Capture')

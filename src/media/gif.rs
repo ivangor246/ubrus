@@ -104,10 +104,14 @@ impl Gif {
         self.timer.borrow().is_some()
     }
     pub fn play(self: &Rc<Self>, active: bool) {
+        self.play_at(active, Instant::now());
+    }
+
+    fn play_at(self: &Rc<Self>, active: bool, now: Instant) {
         if !active {
             if let Some(start) = self.started.take() {
                 self.elapsed
-                    .set(self.elapsed.get() + start.elapsed().mul_f64(self.rate));
+                    .set(self.elapsed.get() + now.duration_since(start).mul_f64(self.rate));
             }
             if let Some(id) = self.timer.take() {
                 id.remove();
@@ -117,13 +121,12 @@ impl Gif {
         if self.started.get().is_some() || self.animation.is_static_image() {
             return;
         }
-        self.started.set(Some(Instant::now()));
-        self.tick();
+        self.started.set(Some(now));
+        self.tick(now);
     }
 
-    fn tick(self: &Rc<Self>) {
+    fn tick(self: &Rc<Self>, now: Instant) {
         let Some(start) = self.started.get() else { return };
-        let now = Instant::now();
         let position = self.elapsed.get() + now.duration_since(start).mul_f64(self.rate);
         let mut changed = self.iter.borrow().advance(SystemTime::UNIX_EPOCH + position);
         if self.iter.borrow().delay_time().is_none() {
@@ -147,7 +150,7 @@ impl Gif {
         *self.timer.borrow_mut() = Some(glib::timeout_add_local_once(delay, move || {
             if let Some(g) = weak.upgrade() {
                 g.timer.take();
-                g.tick();
+                g.tick(Instant::now());
             }
         }));
     }

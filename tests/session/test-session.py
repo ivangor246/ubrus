@@ -43,17 +43,14 @@ def seed_library(session: DesktopSession) -> None:
     media.mkdir(parents=True)
     thumbnails.mkdir()
     clip = media / 'test.webm'
-    if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
-        shutil.copyfile(MEDIA_DIR / 'loop.webm', clip)
-    else:
-        # A benchmark interval spans a single segment so a flushing loop cannot reset sink statistics.
-        active_seconds = int(os.getenv('UBRUS_BENCH_ACTIVE_SECONDS', '0'))
-        frames = (active_seconds + 10) * 30 if active_seconds else 90
-        create_media(
-            f'videotestsrc num-buffers={frames} pattern=smpte horizontal-speed=17 ! '
-            'video/x-raw,width=1920,height=1080,framerate=30/1 ! vp8enc threads=1 deadline=1 ! webmmux',
-            clip,
-        )
+    # A benchmark interval spans a single segment so a flushing loop cannot reset sink statistics.
+    active_seconds = int(os.getenv('UBRUS_BENCH_ACTIVE_SECONDS', '0'))
+    frames = (active_seconds + 10) * 30 if active_seconds else 90
+    create_media(
+        f'videotestsrc num-buffers={frames} pattern=smpte horizontal-speed=17 ! '
+        'video/x-raw,width=1920,height=1080,framerate=30/1 ! vp8enc threads=1 deadline=1 ! webmmux',
+        clip,
+    )
     digest = hashlib.sha256(clip.read_bytes()).hexdigest()
     clip.rename(media / f'{digest}.webm')
     create_media('videotestsrc num-buffers=1 ! pngenc', thumbnails / f'{digest}.png')
@@ -128,18 +125,22 @@ def reopen_settings(session: DesktopSession, controller: subprocess.Popen) -> No
     session.log('reopened one settings window from the background service')
 
 
-def check_wayland_import(session: DesktopSession) -> None:
+def check_window_import(session: DesktopSession) -> None:
     files = [MEDIA_DIR / 'landscape.png', MEDIA_DIR / 'single.gif']
     selection = session.selection.with_suffix('.json')
     selection.write_text(json.dumps([str(path) for path in files]), encoding='utf-8')
     expected = {hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
-    session.probe('Import')
+    if session.mode == 'x11':
+        from scenarios.x11_settings import SettingsWindow
+        SettingsWindow().key('ctrl+o')
+    else:
+        session.probe('Import')
     wait_for(
         'both selected files to be imported',
         lambda: expected.issubset(session.profile()['items']),
     )
     assert (
-        session.selection.with_suffix('.parent').read_text(encoding='utf-8').startswith('wayland:')
+        session.selection.with_suffix('.parent').read_text(encoding='utf-8').startswith(f'{session.mode}:')
     )
     selection.unlink()
     session.log('imported two files through the file chooser parented to the Iced window')
@@ -190,10 +191,8 @@ def run(session: DesktopSession) -> None:
     if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
         from scenarios.x11_settings import check_first_run
         os.environ['UBRUS_RENDERER'] = str(SESSION_DIR / 'fixtures/renderer.py')
-        seed_library(session)
         start_shell(session)
-        app = start_controller(session)
-        check_first_run(session, app)
+        check_first_run(session)
         return
 
     seed_library(session)
@@ -206,13 +205,8 @@ def run(session: DesktopSession) -> None:
         rearrange_outputs(session)
     check_coverage(session, count)
     reopen_settings(session, app)
-    if session.mode == 'x11':
-        # Pillow and xdotool are only installed in the X11 test environment.
-        from scenarios.x11_settings import check_first_run
-
-        app = check_first_run(session, app)
-    elif not session.installed:
-        check_wayland_import(session)
+    if not session.installed or session.mode == 'x11':
+        check_window_import(session)
 
     check_extension_restart(session)
     check_controller_loss(session, app)

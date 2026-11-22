@@ -83,6 +83,10 @@ impl Widget<Message, Theme, Renderer> for Control<'_> {
             .layout(&mut tree.children[0], renderer, limits)
     }
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, _: &Renderer, op: &mut dyn Operation) {
+        #[cfg(feature = "ui-test")]
+        if let Some(message) = &self.forward {
+            super::probe::control(op, layout.bounds(), message, tree.state.downcast_ref::<Focus>().0);
+        }
         if self.forward.is_some() {
             op.focusable(self.id.as_ref(), layout.bounds(), tree.state.downcast_mut::<Focus>());
         }

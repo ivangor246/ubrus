@@ -109,6 +109,8 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
             }),
             window::close_requests().map(Message::Close),
             keyboard::listen().filter_map(shortcut),
+            #[cfg(feature = "ui-test")]
+            iced::event::listen_with(super::probe::request),
         ])
     })
     .run()?;

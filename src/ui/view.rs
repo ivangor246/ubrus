@@ -182,6 +182,7 @@ impl Ui {
             .spacing(8)
             .wrap(),
             text_editor(&self.report.content)
+                .id("report")
                 .on_action(Message::ReportInteraction)
                 .font(iced::Font::MONOSPACE)
                 .size(14)
@@ -617,6 +618,7 @@ impl Ui {
         }))
         .width(Fill)
         .height(height)
+        .id("preview")
         .style(|theme: &Theme| {
             container::Style::default()
                 .background(theme.extended_palette().background.weak.color)

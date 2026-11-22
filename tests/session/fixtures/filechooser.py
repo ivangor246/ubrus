@@ -38,8 +38,9 @@ def main() -> None:
     selection = Path(os.environ['XDG_RUNTIME_DIR']) / 'ubrus-test-selection'
 
     def choose(_bus, _sender, _path, _interface, _method, arguments, reply):
-        _, _, parent_window, _, options = arguments.unpack()
+        _, app_id, parent_window, _, options = arguments.unpack()
         try:
+            selection.with_suffix('.app-id').write_text(app_id, encoding='utf-8')
             selection.with_suffix('.parent').write_text(parent_window, encoding='utf-8')
             multiple = selection.with_suffix('.json')
             if multiple.is_file() and _method == 'OpenFile':

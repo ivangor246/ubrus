@@ -6,6 +6,9 @@ rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+ui-test = []
+
 [dependencies]
 anyhow = "1"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_14"] }

@@ -35,13 +35,17 @@ def check_pixels(session, serial, send, await_layout):
             )
         )
     send(json.dumps(dict(serial=serial, screens=screens)))
-    while await_layout(serial, 2)['displayed'].get('0') != str(path):
-        pass
+    await_layout(serial, 'both fixture surfaces', lambda s: s['displayed'] == {'0': str(path), '1': str(path)})
     for i, x in enumerate([0, 400]):
-        wid = subprocess.check_output(
-            ['xdotool', 'search', '--onlyvisible', '--name', f'^Ubrus surface {i}$'], text=True
-        ).splitlines()[-1]
-        subprocess.run(['xdotool', 'windowmove', '--sync', wid, str(x), '40'], check=True)
+        def mapped():
+            result = subprocess.run(
+                ['xdotool', 'search', '--onlyvisible', '--name', f'^Ubrus surface {i}$'],
+                text=True, capture_output=True, timeout=5,
+            )
+            return next(iter(result.stdout.splitlines()), None)
+
+        wid = wait_for(f'mapped renderer surface {i}', mapped)
+        subprocess.run(['xdotool', 'windowmove', '--sync', wid, str(x), '40'], check=True, timeout=8)
 
     def painted():
         img = ImageGrab.grab(xdisplay=os.environ['DISPLAY'])
@@ -78,15 +82,19 @@ def verify_renderer(session):
             child.stdin.write(value + '\n')
             child.stdin.flush()
 
-        def await_layout(serial, count):
+        def await_layout(serial, description, predicate):
             deadline = time.monotonic() + 12
-            while time.monotonic() < deadline:
-                status = events.get(timeout=max(0.1, deadline - time.monotonic()))
-                if status is None or status.get('error'):
-                    raise RuntimeError(f'Renderer failed: {status}')
-                if status['serial'] == serial and len(status['displayed']) == count:
-                    return status
-            raise TimeoutError(f'Renderer layout {serial}')
+            last = None
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    last = events.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if last is None or last.get('error'):
+                    raise RuntimeError(f'Renderer failed: {last}')
+                if last['serial'] == serial and predicate(last):
+                    return last
+            raise TimeoutError(f'Renderer layout {serial}: {description}. Last status: {last}')
 
         try:
             serial = 0
@@ -108,26 +116,29 @@ def verify_renderer(session):
                     for screen, rate in zip(screens, rates):
                         screen['frame']['speed'] = rate
                     send(json.dumps(dict(serial=serial, screens=screens)))
-                    status = await_layout(serial, 2)
-                    while status.get('speeds') != {'0': rates[0], '1': rates[1]}:
-                        status = await_layout(serial, 2)
+                    paths = {str(i): screen['path'] for i, screen in enumerate(screens)}
+                    speeds = dict(zip(paths, rates))
+                    status = await_layout(
+                        serial, 'assigned media playing at the requested rates',
+                        lambda s: s['displayed'] == paths and s['speeds'] == speeds
+                        and s['streams'] and all(stream['playing'] for stream in s['streams']),
+                    )
                     assert len(status['streams']) == expected
-                time.sleep(0.45)
                 for screen in screens:
                     screen['active'] = False
                 serial += 1
                 send(json.dumps(dict(serial=serial, screens=screens)))
                 # A settled pipeline reports its own transition without an explicit status poll.
-                status = await_layout(serial, 2)
-                while not all(s['paused'] for s in status['streams']):
-                    status = await_layout(serial, 2)
+                await_layout(serial, 'both streams paused', lambda s: len(s['streams']) == 2 and all(
+                    stream['paused'] for stream in s['streams']
+                ))
                 for screen in screens:
                     screen['active'] = True
                 serial += 1
                 send(json.dumps(dict(serial=serial, screens=screens)))
-                status = await_layout(serial, 2)
-                while not all(s['playing'] for s in status['streams']):
-                    status = await_layout(serial, 2)
+                await_layout(serial, 'both streams playing', lambda s: len(s['streams']) == 2 and all(
+                    stream['playing'] for stream in s['streams']
+                ))
             check_pixels(session, serial + 1, send, await_layout)
             session.log('rendered GIF, WebP, MP4 and WebM at two rates and paused both outputs')
         finally:

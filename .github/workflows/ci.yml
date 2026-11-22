@@ -33,7 +33,7 @@ jobs:
           UBRUS_TEST_SOFTWARE: '1'
           GST_PLUGIN_FEATURE_RANK: 'vp8dec:512,vp9dec:512,avdec_h264:512,nvvp8dec:0'
         run: |
-          UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/controller make test-controller
+          WINIT_X11_SCALE_FACTOR=1.25 UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/controller make test-controller
           UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/renderer make test-renderer
           UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/full make test-integration SESSION=x11
       - name: Save desktop session diagnostics

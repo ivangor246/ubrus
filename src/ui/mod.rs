@@ -3,6 +3,9 @@ mod displays;
 mod focus;
 mod gallery;
 mod preview;
+#[cfg(feature = "ui-test")]
+#[path = "../../tests/session/widgets.rs"]
+mod probe;
 mod report;
 mod runtime;
 mod style;
@@ -28,6 +31,8 @@ enum Tab {
 
 #[derive(Clone, Debug)]
 enum Message {
+    #[cfg(feature = "ui-test")]
+    InspectWidgets,
     Event(Box<Event>),
     SystemAppearance(portal::Appearance),
     Tab(Tab),
@@ -417,6 +422,8 @@ impl Ui {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            #[cfg(feature = "ui-test")]
+            Message::InspectWidgets => return probe::inspect(self),
             Message::SystemAppearance(value) => self.system_appearance = value,
             Message::Event(event) => match *event {
                 Event::Open(data) => {

@@ -1,45 +1,36 @@
 use super::*;
 
 #[test]
-fn late_timer_presents_the_current_gif_frame() -> Result<()> {
+fn late_timer_and_pause_use_elapsed_playback_time() -> Result<()> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/loop.gif");
     let gif = Gif::open(&path, 100)?;
-    let reference = gif.animation.iter(Some(SystemTime::UNIX_EPOCH));
-    let start = std::time::Instant::now();
-    gif.play(true);
-    let before = gif.decoded.get();
-    // Block dispatch across two frame boundaries, as can happen during a Shell transition.
-    std::thread::sleep(Duration::from_millis(410));
-    while gif.decoded.get() == before {
-        glib::MainContext::default().iteration(true);
-    }
-    reference.advance(SystemTime::UNIX_EPOCH + start.elapsed());
-    gif.play(false);
-    assert!(gif.iter.borrow().pixbuf().read_pixel_bytes() == reference.pixbuf().read_pixel_bytes());
-    assert!(!gif.is_playing());
-    Ok(())
-}
+    let start = Instant::now();
+    let late = Duration::from_millis(410);
+    gif.play_at(true, start);
+    let first = gif.frames.current_image();
 
-#[test]
-fn pausing_keeps_the_displayed_texture_and_resumes_the_same_stream() -> Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/loop.gif");
-    let gif = Gif::open(&path, 100)?;
-    let context = glib::MainContext::default();
-    gif.play(true);
-    let first = gif.decoded.get();
-    while gif.decoded.get() == first {
-        context.iteration(true);
-    }
-    gif.play(false);
+    // Deliver the already scheduled callback at a known point in the animation.
+    gif.timer.take().unwrap().remove();
+    gif.tick(start + late);
+    let reference = gif.animation.iter(Some(SystemTime::UNIX_EPOCH));
+    reference.advance(SystemTime::UNIX_EPOCH + late);
+    assert_eq!(
+        gif.iter.borrow().pixbuf().read_pixel_bytes(),
+        reference.pixbuf().read_pixel_bytes()
+    );
     let frozen = gif.frames.current_image();
-    std::thread::sleep(Duration::from_millis(220));
-    while context.iteration(false) {}
+    assert_ne!(frozen, first);
+
+    gif.play_at(false, start + late);
+    assert!(!gif.is_playing());
+    let resume = start + Duration::from_secs(10);
+    gif.tick(resume);
+    gif.play_at(true, resume);
+    assert!(gif.is_playing());
     assert_eq!(gif.frames.current_image(), frozen);
-    gif.play(true);
-    assert_eq!(gif.frames.current_image(), frozen);
-    while gif.frames.current_image() == frozen {
-        context.iteration(true);
-    }
-    gif.play(false);
+    gif.timer.take().unwrap().remove();
+    gif.tick(resume + Duration::from_millis(160));
+    assert_ne!(gif.frames.current_image(), frozen);
+    gif.play_at(false, resume + Duration::from_millis(160));
     Ok(())
 }

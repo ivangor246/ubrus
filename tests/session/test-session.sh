@@ -26,6 +26,7 @@ unset UBRUS_RENDERER
 export LP_NUM_THREADS=1 NO_AT_BRIDGE=1 GTK_A11Y=none
 if [[ ${UBRUS_TEST_SOFTWARE:-0} == 1 ]]; then export LIBGL_ALWAYS_SOFTWARE=1 GSK_RENDERER=cairo; fi
 mkdir -p -m 700 "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+gsettings set org.gnome.desktop.interface enable-animations false
 mkdir -p "$XDG_DATA_HOME/applications" "$XDG_RUNTIME_DIR/downloads"
 printf 'XDG_DOWNLOAD_DIR="%s"\n' "$XDG_RUNTIME_DIR/downloads" > "$XDG_CONFIG_HOME/user-dirs.dirs"
 cp packaging/desktop/org.ubrus.Ubrus.desktop "$XDG_DATA_HOME/applications/"
@@ -54,14 +55,18 @@ log_dir=${UBRUS_TEST_LOG_DIR:-tests/artifacts/session-tests}
 mkdir -p "$log_dir"
 # D-Bus activated dialogs and the test application must use the same isolated display.
 if [[ "$mode" == x11 ]]; then
-    # The permission-dialog fixture identifies the portal's English window title.
+    # Start with a known system language before exercising the application overrides.
     export LC_ALL=C.UTF-8 LANGUAGE=en
     export XAUTHORITY="$temp/Xauthority"
     touch "$XAUTHORITY"
     cookie=$(mcookie)
     xauth add :0 MIT-MAGIC-COOKIE-1 "$cookie"
     geometry=1280x720x24
-    if [[ ${UBRUS_TEST_COMPONENT:-} == controller ]]; then geometry=1600x1000x24; fi
+    if [[ ${UBRUS_TEST_COMPONENT:-} == controller ]]; then
+        geometry=2000x1250x24
+        export UBRUS_TEST_WIDGETS="$temp/widgets"
+        mkdir -m 700 "$UBRUS_TEST_WIDGETS"
+    fi
     "${XVFB:-Xvfb}" -displayfd 3 -screen 0 "$geometry" -nolisten tcp -noreset -auth "$XAUTHORITY" \
         3>"$temp/display" 2>"$log_dir/xvfb.log" &
     xvfb_pid=$!
