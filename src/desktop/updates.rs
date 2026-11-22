@@ -43,7 +43,19 @@ pub fn binary_changed() -> bool {
     }
 }
 
+fn snap_extension_changed(mount: &Path, loaded: &str) -> bool {
+    // A running process retains its old revision in SNAP after a refresh.
+    let build = Path::new("share/ubrus/extension-build-id");
+    let current = mount.parent().unwrap_or(mount).join("current").join(build);
+    fs::read_to_string(current)
+        .or_else(|_| fs::read_to_string(mount.join(build)))
+        .is_ok_and(|installed| !installed.trim().is_empty() && installed.trim() != loaded)
+}
+
 pub fn extension_changed(loaded: &str) -> bool {
+    if let Some(mount) = std::env::var_os("SNAP") {
+        return snap_extension_changed(Path::new(&mount), loaded);
+    }
     let Some(install) = installation() else { return false };
     fs::read(&install.metadata)
         .ok()
@@ -66,8 +78,17 @@ pub fn relaunch_if_requested() -> std::io::Result<()> {
 
 pub fn watch(events: async_channel::Sender<crate::app::Event>) -> Vec<gtk::gio::FileMonitor> {
     use gtk::gio::{self, prelude::*};
-    let Some(install) = installation() else { return vec![] };
-    [&install.executable, &install.metadata]
+    let paths = if let Some(mount) = std::env::var_os("SNAP") {
+        Path::new(&mount)
+            .parent()
+            .map(|p| vec![p.join("current")])
+            .unwrap_or_default()
+    } else if let Some(install) = installation() {
+        vec![install.executable.clone(), install.metadata.clone()]
+    } else {
+        return Vec::new();
+    };
+    paths
         .into_iter()
         .filter_map(|path| {
             let file = gio::File::for_path(path);
@@ -85,3 +106,7 @@ pub fn watch(events: async_channel::Sender<crate::app::Event>) -> Vec<gtk::gio::
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../../tests/rust/updates.rs"]
+mod tests;

@@ -1,8 +1,9 @@
 mod actions;
 pub mod control;
 pub mod diagnostics;
+mod import;
 mod messages;
-pub use messages::{Action, Command, Event, Preference, Snapshot};
+pub use messages::{Action, Command, Event, Feedback, Preference, Snapshot};
 
 use crate::preferences::Text;
 use actions::{finish, perform};
@@ -16,6 +17,8 @@ use std::{
 
 #[derive(Default)]
 struct SettingsSession {
+    importing: RefCell<Option<gio::Cancellable>>,
+    changes: iced::futures::lock::Mutex<()>,
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     epoch: Cell<u64>,
 }
@@ -24,6 +27,7 @@ impl SettingsSession {
     fn open(&self, control: &Control, events: &Sender<Event>) {
         self.hold.borrow_mut().get_or_insert_with(|| control.hold());
         control.keep_alive();
+        control.settings_open(true);
         let epoch = self.epoch.get() + 1;
         self.epoch.set(epoch);
         let _ = events.try_send(Event::Open(Snapshot {
@@ -35,28 +39,52 @@ impl SettingsSession {
         }));
     }
 
-    fn close(&self, epoch: u64) {
+    fn close(&self, control: &Control, epoch: u64) {
         if self.epoch.get() == epoch {
             self.hold.borrow_mut().take();
+            control.settings_open(false);
         }
     }
 
-    async fn dispatch(&self, control: &Control, events: &Sender<Event>, command: Command) {
+    async fn dispatch(self: &Rc<Self>, control: &Rc<Control>, events: &Sender<Event>, command: Command) {
         let (command, from_panel) = match command {
             Command::Panel(command) => (*command, true),
             command => (command, false),
         };
         match command {
             Command::Panel(_) => unreachable!(),
+            Command::CancelImport => {
+                if let Some(cancel) = self.importing.borrow().as_ref() {
+                    cancel.cancel();
+                }
+            }
+            Command::Action(Action::Import, parent, _) => {
+                if self.importing.borrow().is_some() {
+                    return;
+                }
+                let cancel = gio::Cancellable::new();
+                *self.importing.borrow_mut() = Some(cancel.clone());
+                let control = control.clone();
+                let events = events.clone();
+                let session = self.clone();
+                let hold = control.hold();
+                glib::spawn_future_local(async move {
+                    let _hold = hold;
+                    let result = import::run(&control, &events, parent, &cancel, &session.changes).await;
+                    session.importing.borrow_mut().take();
+                    finish(&control, &events, result, Text::FailedImport, from_panel);
+                });
+            }
             Command::Open => self.open(control, events),
             Command::Restart => control.restart(),
-            Command::Close(epoch) => self.close(epoch),
+            Command::Close(epoch) => self.close(control, epoch),
             Command::Inspect => {
                 control.signal("Inspect");
                 let _ = events.try_send(Event::Log(control.store.report("")));
             }
             Command::Error(message) => control.store.log(&message),
             Command::Set(preference) => {
+                let _guard = self.changes.lock().await;
                 let result = control.save(|profile| {
                     preference.apply(profile);
                     Ok(())
@@ -73,9 +101,12 @@ impl SettingsSession {
                 );
             }
             Command::Action(action, parent, size) => {
+                let _guard = self.changes.lock().await;
                 let _hold = control.hold();
                 let fallback = action.failure_message();
-                let result = perform(control, events, action, parent, size).await;
+                let result = perform(control, events, action, parent, size)
+                    .await
+                    .map(|(message, selected)| (message.map(Feedback::Message), selected));
                 finish(control, events, result, fallback, from_panel);
             }
         }
@@ -147,7 +178,7 @@ pub fn run(events: Sender<Event>, commands: Receiver<Command>, panel: Sender<Com
             return glib::ExitCode::FAILURE;
         };
         if line.options_dict().contains("background") {
-            if c.profile.borrow().autostart == Some(true) {
+            if c.profile.borrow().login_enabled() {
                 c.keep_alive();
             }
         } else {

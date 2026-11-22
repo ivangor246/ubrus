@@ -1,0 +1,107 @@
+name: Snap Store
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Store channel for the tag workflow
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Upload a candidate or promote a tested candidate
+        type: choice
+        options: [candidate, stable]
+        required: true
+      revision:
+        description: Signed amd64 revision tested for stable promotion
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snap-store-release
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require a published release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_TYPE" = tag
+          sudo apt-get install -y python3-yaml
+          /usr/bin/python3 packaging/check-release.py --tag "$GITHUB_REF_NAME"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
+
+  candidate:
+    needs: source
+    if: inputs.channel == 'candidate'
+    runs-on: ubuntu-24.04
+    environment: snap-candidate
+    outputs:
+      revision: ${{ steps.upload.outputs.revision }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - id: build
+        uses: canonical/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
+      - name: Validate and upload to latest/candidate
+        id: upload
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          sudo apt-get install -y python3-yaml squashfs-tools
+          bash packaging/extension.sh
+          /usr/bin/python3 packaging/check-release.py --tag "$GITHUB_REF_NAME" --snap "$SNAP_FILE"
+          snapcraft upload "$SNAP_FILE" --release=latest/candidate
+          for attempt in {1..12}; do
+            if snap download ubrus --channel=latest/candidate --basename="upload-$attempt" &&
+               cmp -s "$SNAP_FILE" "upload-$attempt.snap"; then
+              revision=$(sed -n 's/^snap-revision: //p' "upload-$attempt.assert")
+              [[ "$revision" =~ ^[1-9][0-9]*$ ]]
+              echo "revision=$revision" >> "$GITHUB_OUTPUT"
+              echo "Signed amd64 candidate revision: $revision" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The Store has not served the uploaded package from latest/candidate." >&2
+          exit 1
+
+  verify:
+    needs: [source, candidate]
+    if: >-
+      !cancelled() && needs.source.result == 'success' &&
+      (needs.candidate.result == 'success' || inputs.channel == 'stable')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install the signed candidate and check the upgrade path
+        env:
+          TESTED_REVISION: ${{ needs.candidate.outputs.revision || inputs.revision }}
+        run: bash packaging/snap/test-candidate.sh "$GITHUB_REF_NAME" "$TESTED_REVISION"
+
+  stable:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    runs-on: ubuntu-24.04
+    environment: snap-stable
+    steps:
+      - run: sudo snap install snapcraft --classic
+      - name: Promote the tested revision
+        env:
+          TESTED_REVISION: ${{ inputs.revision }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: snapcraft release ubrus "$TESTED_REVISION" latest/stable

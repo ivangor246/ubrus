@@ -63,3 +63,50 @@ fn saving_reports_needs_no_portal_and_preserves_earlier_files() -> Result<()> {
     assert_eq!(std::fs::read_to_string(third)?, "fallback");
     Ok(())
 }
+
+#[test]
+fn public_report_uses_only_structured_fields_and_status_checks_the_renderer() -> Result<()> {
+    let mut profile = library::Profile::default();
+    let private = "private-user-path";
+    profile.items.insert(
+        private.into(),
+        library::Item {
+            name: private.into(),
+            ext: "mp4".into(),
+            motion: None,
+        },
+    );
+    profile.assign(
+        ALL,
+        Choice {
+            id: private.into(),
+            frame: Default::default(),
+            fit: false,
+        },
+    )?;
+    let mut status = crate::app::control::Status {
+        outputs: vec![crate::app::control::Output {
+            id: private.into(),
+            name: private.into(),
+            reason: "visible".into(),
+            width: 1920,
+            height: 1080,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(wallpaper_status(&profile, &status), Text::Offline);
+    status.connected = true;
+    assert_eq!(wallpaper_status(&profile, &status), Text::RendererWaiting);
+    status.engine =
+        serde_json::json!({"displayed":{"0": private}, "streams":[{"playing":true,"decoder":private,"dropped":null}]});
+    assert_eq!(wallpaper_status(&profile, &status), Text::Running);
+    status.engine["streams"][0] = serde_json::json!({"paused":true});
+    status.outputs[0].reason = "covered".into();
+    assert_eq!(wallpaper_status(&profile, &status), Text::Covered);
+    status.error = private.into();
+    status.outputs[0].reason = private.into();
+    assert_eq!(wallpaper_status(&profile, &status), Text::RendererError);
+    assert!(public_report(&profile, &status).contains("1920×1080"));
+    assert!(!public_report(&profile, &status).contains(private));
+    Ok(())
+}

@@ -3,7 +3,7 @@ mod x11;
 
 use surface::WallpaperSurface;
 
-use crate::media::Video;
+use crate::media::{Video, VideoEvent};
 use anyhow::{Context, Result};
 use gtk::{gio, glib, prelude::*};
 use serde::Deserialize;
@@ -76,7 +76,8 @@ impl Engine {
                     return;
                 }
                 match result {
-                    Ok(()) => {
+                    Ok(VideoEvent::StateChanged) => e.status(),
+                    Ok(VideoEvent::Ready) => {
                         e.ready.insert(key.clone());
                         if let Err(err) = e.update() {
                             emit(json!({"error":err.to_string(), "serial":e.serial}));

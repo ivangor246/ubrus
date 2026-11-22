@@ -5,7 +5,7 @@ use iced::{
     advanced::{
         Clipboard, Layout, Shell, Widget, layout, overlay,
         renderer::{self, Renderer as _},
-        widget::{Operation, Tree, operation::focusable::Focusable, tree},
+        widget::{Id, Operation, Tree, operation::focusable::Focusable, tree},
     },
     keyboard, mouse,
 };
@@ -25,6 +25,7 @@ impl Focusable for Focus {
 }
 
 struct Control<'a> {
+    id: Option<Id>,
     child: Element<'a, Message>,
     forward: Option<Message>,
     backward: Option<Message>,
@@ -34,12 +35,26 @@ pub(super) fn action<'a>(child: impl Into<Element<'a, Message>>, press: Option<M
     cycle(child, press, None)
 }
 
+pub(super) fn named_action<'a>(
+    id: String,
+    child: impl Into<Element<'a, Message>>,
+    press: Message,
+) -> Element<'a, Message> {
+    Element::new(Control {
+        id: Some(id.into()),
+        child: child.into(),
+        forward: Some(press),
+        backward: None,
+    })
+}
+
 pub(super) fn cycle<'a>(
     child: impl Into<Element<'a, Message>>,
     forward: Option<Message>,
     backward: Option<Message>,
 ) -> Element<'a, Message> {
     Element::new(Control {
+        id: None,
         child: child.into(),
         forward,
         backward,
@@ -69,7 +84,7 @@ impl Widget<Message, Theme, Renderer> for Control<'_> {
     }
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, _: &Renderer, op: &mut dyn Operation) {
         if self.forward.is_some() {
-            op.focusable(None, layout.bounds(), tree.state.downcast_mut::<Focus>());
+            op.focusable(self.id.as_ref(), layout.bounds(), tree.state.downcast_mut::<Focus>());
         }
     }
     fn draw(
@@ -90,17 +105,19 @@ impl Widget<Message, Theme, Renderer> for Control<'_> {
                     .draw(&tree.children[0], r, theme, style, layout, cursor, &clip)
             });
             if tree.state.downcast_ref::<Focus>().0 && self.forward.is_some() {
-                // Two contrasting edges stay visible on both a filled button and the page.
-                for (width, color) in [(3., theme.palette().text), (1., theme.palette().background)] {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds,
-                            border: iced::Border::default().width(width).rounded(6).color(color),
-                            ..Default::default()
-                        },
-                        iced::Color::TRANSPARENT,
-                    );
-                }
+                // The child's clip is a separate layer. Paint the ring on top of it.
+                renderer.with_layer(clip, |r| {
+                    for (width, color) in [(3., theme.palette().text), (1., theme.palette().background)] {
+                        r.fill_quad(
+                            renderer::Quad {
+                                bounds,
+                                border: iced::Border::default().width(width).rounded(6).color(color),
+                                ..Default::default()
+                            },
+                            iced::Color::TRANSPARENT,
+                        );
+                    }
+                });
             }
         }
     }
@@ -132,7 +149,11 @@ impl Widget<Message, Theme, Renderer> for Control<'_> {
         }
         let focus = tree.state.downcast_mut::<Focus>();
         if matches!(event, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))) {
-            focus.0 = self.forward.is_some() && cursor.is_over(layout.bounds()) && cursor.is_over(*viewport);
+            let is_focused = self.forward.is_some() && cursor.is_over(layout.bounds()) && cursor.is_over(*viewport);
+            if focus.0 != is_focused {
+                focus.0 = is_focused;
+                shell.request_redraw();
+            }
         }
         if focus.0
             && let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event

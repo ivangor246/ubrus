@@ -10,7 +10,8 @@ use gtk::{
 use std::path::Path;
 
 // A bounded first-frame decode runs on the import worker. Files become visible in the library only after this succeeds.
-pub fn thumbnail(path: &Path, item: &Item, output: &Path) -> Result<()> {
+pub fn thumbnail(path: &Path, item: &Item, output: &Path) -> Result<Option<bool>> {
+    let mut motion = None;
     let pixbuf = if matches!(item.ext.as_str(), "mp4" | "webm") {
         let bin = gst::parse::bin_from_description(
             "videoconvert ! videoscale ! video/x-raw,format=RGB,width=(int)[1,384],height=(int)[1,256],pixel-aspect-ratio=1/1 ! appsink name=thumb max-buffers=1 drop=true",
@@ -56,9 +57,9 @@ pub fn thumbnail(path: &Path, item: &Item, output: &Path) -> Result<()> {
         )
     } else if matches!(item.ext.as_str(), "gif" | "webp") {
         // The scaled still-image loader may stop reading GIFs before the trailer.
-        let first = PixbufAnimation::from_file(path)?
-            .static_image()
-            .context("GIF has no frame")?;
+        let animation = PixbufAnimation::from_file(path)?;
+        motion = Some(!animation.is_static_image());
+        let first = animation.static_image().context("GIF has no frame")?;
         let scale = (384.0 / f64::from(first.width())).min(256.0 / f64::from(first.height()));
         if scale >= 1.0 {
             first
@@ -74,7 +75,7 @@ pub fn thumbnail(path: &Path, item: &Item, output: &Path) -> Result<()> {
         p.apply_embedded_orientation().unwrap_or(p)
     };
     pixbuf.savev(output, "png", &[])?;
-    Ok(())
+    Ok(motion)
 }
 
 #[cfg(test)]

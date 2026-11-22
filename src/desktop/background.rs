@@ -1,10 +1,10 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use gtk::{gio, glib, prelude::*};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 const SCHEMA: &str = "org.gnome.desktop.background";
@@ -14,12 +14,14 @@ const STYLE: &str = "picture-options";
 
 /// The portal overwrites one shared file. Keep the original GNOME settings
 /// and identify our copy before restoring them.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemWallpaper {
     light: Option<String>,
     dark: Option<String>,
     style: Option<String>,
     digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transaction: Option<String>,
 }
 
 fn checksum(path: &Path) -> Result<String> {
@@ -43,15 +45,27 @@ impl SystemWallpaper {
         })
     }
 
-    pub fn capture(previous: Option<&Self>, picture: &Path, library: &Path) -> Result<Self> {
-        if std::env::var_os("SNAP").is_some() {
-            return Ok(Self::default());
-        }
-        let settings = gio::Settings::new(SCHEMA);
-        let cache = glib::user_config_dir().join("background");
-        let mut snapshot = Self::capture_native(&settings, &cache, previous, library)?;
-        snapshot.digest = Some(checksum(picture)?);
-        Ok(snapshot)
+    /// Record how to undo this specific installation separately from the user's original wallpaper.
+    pub fn prepare_install(previous: Option<&Self>, picture: &Path, library: &Path) -> Result<Self> {
+        let (mut installed, mut before) = if std::env::var_os("SNAP").is_some() {
+            (Self::default(), Self::default())
+        } else {
+            let settings = gio::Settings::new(SCHEMA);
+            let cache = glib::user_config_dir().join("background");
+            let before = Self::capture_native(&settings, &cache, None, library)?;
+            let installed = if previous.is_some() {
+                Self::capture_native(&settings, &cache, previous, library)?
+            } else {
+                before.clone()
+            };
+            (installed, before)
+        };
+        let transaction = glib::uuid_string_random().to_string();
+        installed.transaction = Some(transaction.clone());
+        installed.digest = Some(checksum(picture)?);
+        before.digest.clone_from(&installed.digest);
+        WallpaperChange::Install { transaction, before }.write(library)?;
+        Ok(installed)
     }
 
     fn capture_native(settings: &gio::Settings, cache: &Path, previous: Option<&Self>, library: &Path) -> Result<Self> {
@@ -59,6 +73,23 @@ impl SystemWallpaper {
         let light = settings.string(LIGHT) == uri;
         let dark = settings.string(DARK) == uri;
         let mut captured = Self::capture_settings(settings, &uri, previous);
+        // After an interrupted replacement the previous picture may be displayed from
+        // its backup URI. Keep the original settings that preceded that installation.
+        if let Some(prior) = previous
+            && let Some(backup) = prior.backup_uri(library)
+        {
+            let alias_light = settings.string(LIGHT) == backup;
+            let alias_dark = settings.string(DARK) == backup;
+            if alias_light {
+                captured.light.clone_from(&prior.light);
+            }
+            if alias_dark {
+                captured.dark.clone_from(&prior.dark);
+            }
+            if (alias_light || alias_dark) && settings.string(STYLE) == "zoom" {
+                captured.style.clone_from(&prior.style);
+            }
+        }
         if (!light && !dark) || !cache.try_exists()? {
             return Ok(captured);
         }
@@ -75,6 +106,7 @@ impl SystemWallpaper {
             std::io::copy(&mut File::open(cache)?, &mut copy)?;
             copy.as_file().sync_all()?;
             copy.persist(&path)?;
+            File::open(&backups)?.sync_all()?;
         }
         let backup = gio::File::for_path(path).uri().to_string();
         if light {
@@ -99,18 +131,42 @@ impl SystemWallpaper {
             } else {
                 user(STYLE)
             },
-            digest: None,
+            ..Self::default()
         }
     }
 
-    fn restore_native(&self, settings: &gio::Settings, cache: &Path) -> Result<()> {
-        let uri = gio::File::for_path(cache).uri();
-        let light = settings.string(LIGHT) == uri;
-        let dark = settings.string(DARK) == uri;
-        if !light && !dark {
-            return Ok(());
+    fn backup_uri(&self, library: &Path) -> Option<String> {
+        let digest = self.digest.as_ref()?;
+        if !backup_name(digest) {
+            return None;
         }
-        if self.digest.is_none() || (cache.try_exists()? && self.digest.as_ref() != Some(&checksum(cache)?)) {
+        Some(
+            gio::File::for_path(library.join("backgrounds").join(digest))
+                .uri()
+                .to_string(),
+        )
+    }
+
+    fn restore_native(&self, settings: &gio::Settings, cache: &Path, library: &Path) -> Result<()> {
+        let cache_uri = gio::File::for_path(cache).uri();
+        let alias = self.backup_uri(library);
+        let owns = |uri: &str| -> Result<bool> {
+            if uri != cache_uri.as_str() && Some(uri) != alias.as_deref() {
+                return Ok(false);
+            }
+            let Some(expected) = self.digest.as_ref() else {
+                return Ok(false);
+            };
+            let path = gio::File::for_uri(uri)
+                .path()
+                .context("Expected a local wallpaper URI")?;
+            Ok(!path.try_exists()? || &checksum(&path)? == expected)
+        };
+        let light_uri = settings.string(LIGHT);
+        let dark_uri = settings.string(DARK);
+        let light = owns(&light_uri)?;
+        let dark = if dark_uri == light_uri { light } else { owns(&dark_uri)? };
+        if !light && !dark {
             return Ok(());
         }
         let unchanged = |key, value: &Option<String>| {
@@ -142,20 +198,120 @@ impl SystemWallpaper {
         gio::Settings::sync();
         Ok(())
     }
+}
 
-    pub async fn restore(self) -> Result<bool> {
-        if std::env::var_os("SNAP").is_none() {
-            return gio::spawn_blocking(move || {
-                self.restore_native(&gio::Settings::new(SCHEMA), &glib::user_config_dir().join("background"))
-                    .map(|()| true)
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("Desktop settings worker failed"))?;
-        }
-        // A confined portal client cannot prove ownership of the host's shared image.
-        // Keep the host background intact when restoring an older portal assignment.
-        Ok(false)
+#[derive(Serialize, Deserialize)]
+enum WallpaperChange {
+    Install {
+        transaction: String,
+        before: SystemWallpaper,
+    },
+    Remove {
+        previous: SystemWallpaper,
+    },
+}
+
+const JOURNAL: &str = "wallpaper-change.json";
+
+pub fn pending(library: &Path) -> std::io::Result<bool> {
+    library.join(JOURNAL).try_exists()
+}
+
+impl WallpaperChange {
+    fn write(&self, library: &Path) -> Result<()> {
+        crate::files::write_atomic(&library.join(JOURNAL), &serde_json::to_vec(self)?)
     }
+
+    fn restore_for(self, saved: Option<&SystemWallpaper>) -> Option<SystemWallpaper> {
+        match self {
+            Self::Install { transaction, before } => {
+                (saved.and_then(|s| s.transaction.as_ref()) != Some(&transaction)).then_some(before)
+            }
+            Self::Remove { previous } => (saved != Some(&previous)).then_some(previous),
+        }
+    }
+}
+
+pub fn prepare_removal(library: &Path, previous: &SystemWallpaper) -> Result<()> {
+    WallpaperChange::Remove {
+        previous: previous.clone(),
+    }
+    .write(library)
+}
+
+fn backup_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn cleanup_backups(library: &Path, saved: Option<&SystemWallpaper>, settings: &gio::Settings) -> Result<()> {
+    let dir = library.join("backgrounds");
+    let mut keep = std::collections::HashSet::<PathBuf>::new();
+    let mut keep_uri = |uri: &str| {
+        if let Some(path) = gio::File::for_uri(uri).path() {
+            keep.insert(path);
+        }
+    };
+    for key in [LIGHT, DARK] {
+        keep_uri(&settings.string(key));
+    }
+    if let Some(saved) = saved {
+        for uri in [&saved.light, &saved.dark].into_iter().flatten() {
+            keep_uri(uri);
+        }
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry.file_name().to_str().is_some_and(backup_name)
+            && !keep.contains(&entry.path())
+        {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve an interrupted portal call against the atomic profile. Finish its rollback
+/// before collecting backups; the journal may be their only remaining reference.
+pub fn recover(library: &Path, saved: Option<&SystemWallpaper>) -> Result<bool> {
+    if !pending(library)? && !library.join("backgrounds").is_dir() {
+        return Ok(true);
+    }
+    let settings = std::env::var_os("SNAP").is_none().then(|| gio::Settings::new(SCHEMA));
+    recover_with_settings(
+        library,
+        saved,
+        settings.as_ref(),
+        &glib::user_config_dir().join("background"),
+    )
+}
+
+fn recover_with_settings(
+    library: &Path,
+    saved: Option<&SystemWallpaper>,
+    settings: Option<&gio::Settings>,
+    cache: &Path,
+) -> Result<bool> {
+    let path = library.join(JOURNAL);
+    let mut restored = true;
+    if path.try_exists()? {
+        let change: WallpaperChange = serde_json::from_reader(File::open(&path)?)?;
+        if let Some(before) = change.restore_for(saved) {
+            if let Some(settings) = settings {
+                before.restore_native(settings, cache, library)?;
+            } else {
+                restored = false;
+            }
+        }
+        fs::remove_file(&path)?;
+        File::open(library)?.sync_all()?;
+    }
+    if let Some(settings) = settings
+        && library.join("backgrounds").is_dir()
+    {
+        cleanup_backups(library, saved, settings)?;
+    }
+    Ok(restored)
 }
 
 #[cfg(test)]

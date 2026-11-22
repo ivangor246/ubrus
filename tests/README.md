@@ -34,7 +34,34 @@ docker compose -f tests/docker/compose.test.yaml --profile snap-test down
 
 ## Playback measurements
 
-The session test samples the renderer for three seconds while playing a local 1080p/30 VP8 clip. CPU is a percentage of one logical core. RSS includes GTK, GStreamer and driver allocations. Set `UBRUS_BENCH_SECONDS=60` to check that frame counters remain steady during a minute of full coverage.
+The session test samples the renderer for three seconds while playing a local 1080p/30 VP8 clip. CPU is a percentage of one logical core. RSS includes GTK, GStreamer and driver allocations. Use `UBRUS_BENCH_ACTIVE_SECONDS=60 UBRUS_BENCH_SECONDS=60` to measure a minute of continuous playback and a minute with all outputs covered. Set `GST_PLUGIN_FEATURE_RANK=nvvp8dec:NONE` to repeat with the software VP8 decoder on a system using the NVIDIA decoder. The log records the decoder actually selected.
+
+Pass `UBRUS_TEST_COMPONENT=gif` or `webp` to measure a 1920×1080 animated image on both virtual outputs. Their GdkPixbuf clock reports published frames. It does not provide a dropped-frame counter. For a library benchmark, pass `UBRUS_TEST_COMPONENT=library`. The fixture measures time until the settings window maps and samples RSS 600 ms later. Run the library benchmark against the release build with these commands.
+
+```sh
+make release
+make test-integration UBRUS_TEST_BINARY="$PWD/dist/ubrus" UBRUS_TEST_COMPONENT=library
+```
+
+On Ubuntu 24.04 Wayland, two release runs with ten PNGs opened in 0.12 s and used 49–50 MiB. With 500 PNGs the window opened in 0.12–0.13 s and used 60–61 MiB. The previous implementation measured 0.85–0.86 s and 258–261 MiB with 500 PNGs on this host.
+
+On a laptop with discharging batteries that expose `energy_now` under Linux power_supply, intervals of at least 60 seconds also report whole-system watts. Keep display brightness and background activity steady and repeat both intervals. The runner omits the reading when the energy counter is unavailable or unchanged.
+
+### Ubuntu 24.04 measurements for 0.2.0
+
+The Wayland session used two virtual outputs (800×600 and 640×480) and one shared decoder per source. VP8 displayed all 1,800 frames over 60 seconds. With both outputs covered for another minute, its counters stayed unchanged at 2.4% of one CPU core.
+
+| 1080p source | Decoder | Interval | Delivered frames | CPU, one core | RSS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| VP8, 30 fps | nvvp8dec | 60 s | 1,800 rendered, 0 sink drops | 69.2% | 503 MiB |
+| GIF, 25 fps | GdkPixbuf | 10.1 s | 250 published | 103.0% | 256 MiB |
+| WebP, 25 fps | GdkPixbuf | 10.1 s | 250 published | 67.2% | 391 MiB |
+
+The first published frame was observed 0.73 s after controller launch for GIF and 1.09 s for WebP. A separate one-vCPU KVM test installed the strict Snap and exercised two outputs with software VP8 decoding. It recorded 89.1% of one core and 344 MiB RSS over its three-second active sample, with six sink drops in the current loop.
+
+On Ubuntu 26.04 with GNOME 50, the installed DEB passed monitor rearrangement, coverage, extension restart and recovery in a one-vCPU container. Software VP8 decoding could not sustain 1080p/30 in that container. Over 60 seconds it decoded 794 frames, the sink rendered 87 and dropped 641, and the renderer used 92.4% of one core and 425 MiB RSS. With both outputs covered, the counters stayed unchanged for 60 seconds and renderer CPU measured 0.0%.
+
+### Earlier measurements
 
 | Session tested with 0.1.0 | Virtual outputs | Decoder | CPU | RSS |
 | --- | --- | --- | ---: | ---: |

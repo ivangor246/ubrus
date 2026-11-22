@@ -1,15 +1,15 @@
+mod import;
 mod profile;
-use crate::files::{write_atomic, xdg_directory};
+use crate::files::xdg_directory;
 use anyhow::{Context, Result, ensure};
+pub use import::PreparedImport;
 pub use profile::{ALL, Choice, Item, Profile};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufReader, Read, Write},
+    io::{BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tempfile::NamedTempFile;
 
 #[derive(Clone, Debug)]
 pub struct Store(PathBuf);
@@ -30,6 +30,19 @@ impl Store {
     pub fn root(&self) -> &Path {
         &self.0
     }
+    pub fn try_writer(&self) -> Result<Option<File>> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.root().join(".writer.lock"))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => Err(error.into()),
+        }
+    }
     pub fn profile_path(&self) -> PathBuf {
         self.0.join("profile.json")
     }
@@ -39,14 +52,26 @@ impl Store {
     pub fn thumb(&self, id: &str) -> PathBuf {
         self.0.join("thumbs").join(format!("{id}.png"))
     }
+    #[cfg(test)]
     pub fn load(&self) -> Result<Profile> {
+        let (profile, writable) = self.read_profile()?;
+        ensure!(writable, "Unsupported saved profile version");
+        Ok(profile)
+    }
+
+    pub fn read_profile(&self) -> Result<(Profile, bool)> {
         let file = match File::open(self.profile_path()) {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Profile::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Profile::default(), true)),
             Err(e) => return Err(e.into()),
         };
         let data: serde_json::Value = serde_json::from_reader(BufReader::new(file)).context("Invalid saved profile")?;
-        let legacy = data.get("storage_version").is_none();
+        let version = data.get("storage_version");
+        let legacy = version.is_none();
+        let writable = match version {
+            None => true,
+            Some(version) => version.as_u64().is_some_and(|value| matches!(value, 1 | 2)),
+        };
         let mut profile: Profile = serde_json::from_value(data).context("Invalid saved profile")?;
         for (id, item) in profile.items.iter().chain(&profile.pending_deletions) {
             ensure!(
@@ -79,16 +104,38 @@ impl Store {
             profile.system_wallpaper =
                 crate::desktop::background::SystemWallpaper::identify_legacy(&self.media(&choice.id, item), choice);
         }
-        Ok(profile)
+        Ok((profile, writable))
     }
-    pub fn save(&self, profile: &Profile) -> Result<()> {
-        // Publish the Shell's recovery image in the same atomic write as its assignment.
+    pub fn stage_profile(&self, profile: &Profile) -> Result<tempfile::NamedTempFile> {
         let mut saved = serde_json::to_value(profile)?;
         saved["storage_version"] = 2.into();
         saved["wallpaper_stills"] = serde_json::json!({
             "version": 1, "panel":profile.panel(), "screens": self.screen_paths(profile, true)
         });
-        write_atomic(&self.profile_path(), &serde_json::to_vec_pretty(&saved)?)
+        let mut file = tempfile::Builder::new()
+            .prefix(".ubrus-profile-")
+            .tempfile_in(self.root())?;
+        {
+            let mut output = BufWriter::new(file.as_file_mut());
+            serde_json::to_writer_pretty(&mut output, &saved)?;
+            output.flush()?;
+        }
+        file.as_file().sync_all()?;
+        Ok(file)
+    }
+
+    pub fn publish_profile(&self, staged: tempfile::NamedTempFile) -> Result<()> {
+        let directory = File::open(self.root())?;
+        staged.persist(self.profile_path())?;
+        // The rename is already visible. Retain the media it owns if the final durability
+        // barrier fails, and let diagnostics report the filesystem error.
+        if let Err(err) = directory.sync_all() {
+            self.log(&format!("Profile directory sync: {err:#}"));
+        }
+        Ok(())
+    }
+    pub fn save(&self, profile: &Profile) -> Result<()> {
+        self.publish_profile(self.stage_profile(profile)?)
     }
 
     /// The profile commit precedes unlinking. An interrupted deletion is
@@ -142,53 +189,6 @@ impl Store {
             );
         }
         screens.into()
-    }
-    pub fn import(
-        &self,
-        path: &Path,
-        progress: impl Fn(u64, u64),
-        preview: impl FnOnce(&Path, &Item, &Path) -> Result<()>,
-    ) -> Result<(String, Item)> {
-        let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("").to_lowercase();
-        ensure!(supported(&ext), "Unsupported media format");
-        let ext = if ext == "jpeg" { String::from("jpg") } else { ext };
-        let mut item = Item {
-            motion: None,
-            name: path.file_name().unwrap_or_default().to_string_lossy().into(),
-            ext,
-        };
-        let mut src = File::open(path)?;
-        let meta = src.metadata()?;
-        ensure!(meta.is_file() && meta.len() > 0, "Expected a non-empty regular file");
-        let mut copy = NamedTempFile::new_in(self.0.join("media"))?;
-        let mut digest = Sha256::new();
-        let mut buf = vec![0; 256 * 1024];
-        let mut done = 0;
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            copy.write_all(&buf[..n])?;
-            digest.update(&buf[..n]);
-            done += n as u64;
-            progress(done, meta.len());
-        }
-        let id = format!("{:x}", digest.finalize());
-        item.motion = image_motion(copy.path(), &item.ext)?;
-        let media = self.media(&id, &item);
-        let thumb = self.thumb(&id);
-        if !media.is_file() || !thumb.is_file() {
-            let thumbnail = NamedTempFile::new_in(self.0.join("thumbs"))?;
-            preview(copy.path(), &item, thumbnail.path())?;
-            thumbnail.as_file().sync_all()?;
-            copy.as_file().sync_all()?;
-            copy.persist(&media)?;
-            thumbnail.persist(thumb)?;
-            File::open(self.0.join("media"))?.sync_all()?;
-            File::open(self.0.join("thumbs"))?.sync_all()?;
-        }
-        Ok((id, item))
     }
     pub fn log(&self, message: &str) {
         let log = self.0.join("ubrus.log");

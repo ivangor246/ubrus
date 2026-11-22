@@ -1,0 +1,46 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Validate release metadata
+        run: |
+          /usr/bin/python3 packaging/check-release.py
+          desktop-file-validate packaging/desktop/org.ubrus.Ubrus.desktop
+          appstreamcli validate --no-net packaging/desktop/org.ubrus.Ubrus.metainfo.xml
+      - run: make check
+      - name: Install the isolated desktop test dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            gnome-shell dbus-daemon dbus-x11 upower xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
+            libgl1-mesa-dri libegl-mesa0 gstreamer1.0-tools python3-gi gir1.2-gtk-4.0 python3-gi-cairo \
+            python3-pil xauth xdotool x11-utils xvfb fonts-cantarell fonts-dejavu-core yaru-theme-gnome-shell
+      - name: Exercise the controller, renderer and full X11 session
+        env:
+          UBRUS_TEST_SOFTWARE: '1'
+          GST_PLUGIN_FEATURE_RANK: 'vp8dec:512,vp9dec:512,avdec_h264:512,nvvp8dec:0'
+        run: |
+          UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/controller make test-controller
+          UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/renderer make test-renderer
+          UBRUS_TEST_LOG_DIR=tests/artifacts/session-tests/full make test-integration SESSION=x11
+      - name: Save desktop session diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-session-diagnostics
+          path: tests/artifacts/session-tests/
+          if-no-files-found: ignore
+          retention-days: 7

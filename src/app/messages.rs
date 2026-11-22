@@ -1,7 +1,7 @@
 use super::control::Status;
 use crate::{
     library::{Choice, Profile, Store},
-    preferences::{Appearance, Language, Text},
+    preferences::{Appearance, Language, Locale, Text},
 };
 use ashpd::WindowIdentifier;
 
@@ -23,12 +23,54 @@ pub enum Event {
     Done {
         from_panel: bool,
         profile: Profile,
-        feedback: Option<Text>,
+        feedback: Option<Feedback>,
         selected: Option<String>,
     },
     Log(String),
     ReportSaved(std::path::PathBuf),
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Feedback {
+    Message(Text),
+    ImportBatch {
+        imported: usize,
+        failed: usize,
+        skipped: usize,
+        stopped: Option<Text>,
+    },
+}
+
+impl Feedback {
+    pub fn key(self) -> Text {
+        match self {
+            Self::Message(text) => text,
+            Self::ImportBatch { .. } => Text::ImportSummary,
+        }
+    }
+
+    pub fn localize(self, locale: Locale) -> String {
+        match self {
+            Self::Message(text) => locale.get(text).into(),
+            Self::ImportBatch {
+                imported,
+                failed,
+                skipped,
+                stopped,
+            } => {
+                let summary = locale
+                    .get(Text::ImportSummary)
+                    .replace("{added}", &imported.to_string())
+                    .replace("{failed}", &failed.to_string())
+                    .replace("{skipped}", &skipped.to_string());
+                match stopped {
+                    Some(reason) => format!("{} {summary}", locale.get(reason)),
+                    None => summary,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +109,7 @@ pub enum Action {
     ExportAs,
 }
 pub enum Command {
+    CancelImport,
     Panel(Box<Command>),
     Close(u64),
     Set(Preference),

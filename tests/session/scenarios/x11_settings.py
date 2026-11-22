@@ -76,6 +76,15 @@ class SettingsWindow:
         return self.capture().crop(HEADING_BOX).tobytes()
 
 
+def photo_tile(window):
+    # Find the fixture inside the gallery, regardless of the height of the search and header rows.
+    image = window.capture()
+    for y in range(125, image.height - 8, 4):
+        if all(image.getpixel((x, y))[:3] == (37, 91, 156) for x in (56, 72, 88)):
+            return (72, y)
+    return None
+
+
 def check_responsive(session, window, variant):
     for width, height in [(1440, 900), (620, 430), (900, 600)]:
         xdotool('windowsize', '--sync', window.id, str(width), str(height))
@@ -100,8 +109,9 @@ def check_responsive(session, window, variant):
             return screen
 
         # Reopening the gallery at a narrow size can require a deliberate selection.
-        if width == 620:
-            window.click(116, 175)
+        if width == 620 and not drawn():
+            point = wait_for('the photo at the narrow window size', lambda: photo_tile(window))
+            window.click(*point)
         screenshot = wait_for(f'{width}×{height} editor ({variant})', drawn, timeout=6)
         output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
         screenshot.save(output / f'editor-{variant}-{width}.png')
@@ -310,11 +320,8 @@ def check_preferences(
         select_option(session, window, 'theme', 'dark', theme_row)
         wait_for('dark settings to finish drawing', window.dark)
         window.key('Escape')
-        wait_for(
-            'gallery after leaving Settings',
-            lambda: window.capture().getpixel((64, 154))[:3] == (37, 91, 156),
-        )
-        window.click(106, 158)
+        point = wait_for('gallery after leaving Settings', lambda: photo_tile(window))
+        window.click(*point)
         check_responsive(session, window, 'ru-dark')
         window.key('ctrl+comma')
         select_option(session, window, 'theme', 'system', theme_row)
@@ -380,27 +387,82 @@ def check_diagnostics(
     window.key('ctrl+c')
     wait_for('the full diagnostics selection', lambda: 'Расширение GNOME' in clipboard_text())
 
-    # The primary export must succeed without asking the file chooser for a path.
+    # The four Russian action buttons fit on a single row at the test window's width.
+    width, _ = window.geometry()
+    ink = (230, 238, 231) if window.dark() else (32, 51, 46)
+
+    def focused_action(action, points, top=112):
+        bounds = (window.left, window.top + top, window.left + width, window.top + top + 18)
+
+        def focused():
+            bar = ImageGrab.grab(bbox=bounds, xdisplay=os.environ['DISPLAY'])
+            return any(
+                all(bar.getpixel((x, y))[:3] == ink for x in points) for y in range(bar.height)
+            )
+
+        wait_for(f'visible focus on {action}', focused, timeout=4)
+
+    def tab_to(action, reverse=False):
+        window.key('shift+Tab' if reverse else 'Tab')
+        if action == 'public report':
+            focused_action(action, (width - 80, width - 60, width - 40), 70)
+        else:
+            start = {'Refresh': 40, 'Copy all': 155, 'Export': 315, 'Save as': 475}[action]
+            focused_action(action, (start, start + 20, start + 40))
+
+    # Anchor focus on Refresh, then exercise both directions without clicking another button.
+    window.click(48, 132)
+    focused_action('Refresh', (40, 60, 80))
+    tab_to('public report', reverse=True)
+    window.key('Return')
+
+    def public_report():
+        value = clipboard_text()
+        return value if 'Displays:' in value else None
+
+    public = wait_for('the keyboard-activated public report', public_report)
+    assert public.startswith('Ubrus ') and 'Session: X11' in public
+    assert str(session.library) not in public and 'Landscape panorama' not in public
+
+    private_marker = f'Local-only path: {session.runtime_dir}/personal-picture.png'
+    with (session.library / 'ubrus.log').open('a', encoding='utf-8') as log:
+        log.write(private_marker + '\n')
+    tab_to('Refresh')
+    window.key('Return')  # Refresh loads the new local log entry.
+    tab_to('Copy all')
+
+    def copy_private_report():
+        window.key('Return')
+        return private_marker in clipboard_text()
+
+    wait_for('the full local report after keyboard refresh', copy_private_report)
+    tab_to('Refresh', reverse=True)
+    tab_to('public report', reverse=True)
+    window.key('Return')
+    wait_for('the sanitized copy after a private log was read', lambda: clipboard_text() == public)
+
+    # Advance over Refresh and Copy all to Export, which needs no portal.
+    for action in ('Refresh', 'Copy all', 'Export'):
+        tab_to(action)
     session.selection.unlink(missing_ok=True)
-    window.click(345, 132)
+    window.key('Return')
     downloads = session.runtime_dir / 'downloads'
     wait_for(
         'a directly saved Russian report',
         lambda: any(
-            'Расширение GNOME' in path.read_text(encoding='utf-8')
+            private_marker in path.read_text(encoding='utf-8')
             for path in downloads.glob('ubrus-report-*.txt')
         ),
     )
     chosen = session.runtime_dir / 'report.txt'
     session.selection.write_text(str(chosen), encoding='utf-8')
-
-    def save_as():
-        if chosen.is_file():
-            return 'Расширение GNOME' in chosen.read_text(encoding='utf-8')
-        window.click(505, 132)
-        return False
-
-    wait_for('a report saved through the chooser', save_as)
+    focused_action('Export after saving', (315, 335, 355))
+    tab_to('Save as')
+    window.key('Return')
+    wait_for(
+        'a keyboard-activated report saved through the chooser',
+        lambda: chosen.is_file() and private_marker in chosen.read_text(encoding='utf-8'),
+    )
     window.key('Escape')
     session.log('copied selected diagnostics and saved reports directly and through the portal')
 

@@ -74,6 +74,9 @@ macro_rules! messages {
     }
 }
 messages! {
+    Offline, RendererError, RendererWaiting, NoWallpaper, StillWallpaper, PowerPaused, Covered, OverviewPaused,
+    Search, NoMatches, ReplacesDisplays, CopyPublicReport, PublicReportCopied, CopyCommand, CommandCopied,
+    GuideDeb, GuideStandalone, GuideSnap, CancelImport, ImportStopped, ImportSummary,
     OwnershipUnknown, Position, Disabled, Paused, Hidden, Running, Library, Preferences, Diagnostics, Import,
     Formats, Open, Save, Export, Empty, Preview, Stop, Screen, All, Disconnected, Scaling, Fill,
     Fit, Apply, ClearWallpapers, DeleteItem, Delete, Cancel, ConfirmDelete, ConfirmDeleteActive,

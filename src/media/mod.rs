@@ -2,7 +2,7 @@ mod gif;
 mod thumbnail;
 mod video;
 pub use thumbnail::thumbnail;
-pub use video::Video;
+pub use video::{Video, VideoEvent};
 
 use anyhow::Result;
 use gst::prelude::*;

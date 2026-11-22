@@ -23,6 +23,29 @@ def process_usage(pid: int) -> tuple[float, float, float]:
     return time.monotonic(), cpu_seconds, rss_mib
 
 
+def battery_energy() -> dict[str, int]:
+    """Read whole-system energy in µWh when running on discharging batteries."""
+    batteries = {}
+    try:
+        for device in Path('/sys/class/power_supply').glob('*'):
+            if (device / 'type').read_text().strip() != 'Battery':
+                continue
+            if (device / 'status').read_text().strip() != 'Discharging':
+                return {}
+            batteries[device.name] = int((device / 'energy_now').read_text())
+    except (OSError, ValueError):
+        return {}
+    return batteries
+
+
+def report_battery(session, before: dict[str, int], elapsed: float, state: str) -> None:
+    after = battery_energy()
+    if before and before.keys() == after.keys() and elapsed >= 60:
+        energy = sum(before.values()) - sum(after.values())
+        if energy > 0:
+            session.log(f'{state}: whole-system battery discharge {energy * 0.0036 / elapsed:.2f} W')
+
+
 def check_decoder(session: DesktopSession) -> int:
     initial = session.snapshot()
     pid = initial['engine']['pid']
@@ -37,14 +60,23 @@ def check_decoder(session: DesktopSession) -> int:
     session.log(f'renderer process {pid}, parent {parent}')
 
     (first_stream,) = initial['engine']['streams']
+    battery = battery_energy()
     start, initial_cpu, _ = process_usage(pid)
-    time.sleep(3)
+    seconds = int(os.getenv("UBRUS_BENCH_ACTIVE_SECONDS", "3"))
+    time.sleep(seconds)
     later = session.snapshot()
     end, final_cpu, rss = process_usage(pid)
     percent_cpu = 100 * (final_cpu - initial_cpu) / (end - start)
-    session.log(f'1080p/30 renderer CPU {percent_cpu:.1f}% of one core, RSS {rss:.1f} MiB')
+    report_battery(session, battery, end - start, 'playing')
+    session.log(f'1080p/30 over {seconds}s, renderer CPU {percent_cpu:.1f}% of one core, RSS {rss:.1f} MiB')
     (stream,) = later['engine']['streams']
-    assert stream['decoded'] > first_stream['decoded'], stream
+    decoded = stream['decoded'] - first_stream['decoded']
+    assert decoded > 0, stream
+    if os.getenv('UBRUS_BENCH_ACTIVE_SECONDS'):
+        rendered = stream['rendered'] - first_stream['rendered']
+        dropped = stream['dropped'] - first_stream['dropped']
+        assert rendered > 0 and dropped >= 0, (first_stream, stream)
+        session.log(f'active interval: {decoded} decoded, {rendered} rendered, {dropped} dropped')
     count = len(later['outputs'])
     session.log(
         f'{count} display(s), one {stream["decoder"]} decoder, '
@@ -187,7 +219,13 @@ def check_coverage(session: DesktopSession, count: int) -> None:
     wait_for('all monitors to be covered', lambda: set(reasons()) == {'covered'})
     paused = wait_for('the paused decoder to drain', paused_stream)
     seconds = int(os.getenv('UBRUS_BENCH_SECONDS', '2'))
+    pid = session.status()['engine']['pid']
+    battery = battery_energy()
+    start, initial_cpu, _ = process_usage(pid)
     time.sleep(seconds)
+    end, final_cpu, rss = process_usage(pid)
+    report_battery(session, battery, end - start, 'covered')
+    session.log(f'covered renderer CPU {100 * (final_cpu - initial_cpu) / (end - start):.1f}% of one core, RSS {rss:.1f} MiB')
     current = session.snapshot()['engine']['streams'][0]
     assert current == paused, (paused, current)
     session.log(f'hidden frames stopped for {seconds}s')

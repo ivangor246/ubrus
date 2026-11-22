@@ -22,7 +22,12 @@ fn main() -> glib::ExitCode {
 }
 
 fn run() -> Result<glib::ExitCode> {
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--renderer")) {
+    let argument = std::env::args_os().nth(1);
+    if argument.as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("Ubrus {}", env!("CARGO_PKG_VERSION"));
+        return Ok(glib::ExitCode::SUCCESS);
+    }
+    if argument.as_deref() == Some(std::ffi::OsStr::new("--renderer")) {
         renderer::run()?;
         return Ok(glib::ExitCode::SUCCESS);
     }

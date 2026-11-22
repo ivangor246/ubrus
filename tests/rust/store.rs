@@ -2,6 +2,18 @@ use super::*;
 use crate::media;
 
 #[test]
+fn only_one_session_can_recover_or_update_a_library_at_a_time() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let first = Store::at(directory.path().into())?;
+    let second = Store::at(directory.path().into())?;
+    let writer = first.try_writer()?.unwrap();
+    assert!(second.try_writer()?.is_none());
+    drop(writer);
+    assert!(second.try_writer()?.is_some());
+    Ok(())
+}
+
+#[test]
 fn deleting_global_still_restores_the_desktop_and_keeps_per_monitor_overrides() -> Result<()> {
     let mut p = Profile::default();
     let item = Item {
@@ -237,5 +249,125 @@ fn legacy_single_frame_gif_preserves_its_assignment_without_claiming_the_portal(
     assert_eq!(profile.screens[ALL].frame, Default::default());
     assert!(profile.system_wallpaper.is_none() && profile.visible());
     assert_eq!(profile.autostart, Some(false));
+    Ok(())
+}
+
+#[test]
+fn import_cancels_before_publication_and_rolls_back_on_profile_write_failure() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().join("data"))?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/loop.gif");
+    let mut profile = Profile::default();
+    let decoded = std::cell::Cell::new(false);
+    let cancelled = store.prepare_import(
+        &source,
+        &profile.items,
+        |_, _| {
+            ensure!(!decoded.get(), "cancelled");
+            Ok(())
+        },
+        |path, item, poster| {
+            let result = media::thumbnail(path, item, poster)?;
+            decoded.set(true);
+            Ok(result)
+        },
+    );
+    assert!(matches!(cancelled, Err(e) if e.to_string() == "cancelled"));
+    let prepared = store.prepare_import(&source, &profile.items, |_, _| Ok(()), media::thumbnail)?;
+    fs::create_dir(store.profile_path())?;
+    assert!(store.commit_import(&mut profile, prepared).is_err());
+    assert!(profile.items.is_empty());
+    for name in ["media", "thumbs"] {
+        assert_eq!(fs::read_dir(store.root().join(name))?.count(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_extensions_share_the_first_item_and_recovery_keeps_unclaimed_media() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().join("data"))?;
+    let original = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/landscape.png");
+    let duplicate = dir.path().join("same.jpg");
+    fs::copy(&original, &duplicate)?;
+    let (id, item) = store.import(&original, |_, _| (), media::thumbnail)?;
+    let (other, canonical) = store.import(&duplicate, |_, _| (), |_, _, _| panic!("duplicate decoded"))?;
+    assert_eq!(id, other);
+    assert_eq!(canonical, item);
+    let orphan = store.root().join("media").join(format!("{id}.jpg"));
+    assert!(!orphan.exists());
+    fs::copy(&duplicate, &orphan)?;
+    let tmp = store.root().join("thumbs/.ubrus-import-abandoned");
+    fs::write(&tmp, b"partial")?;
+    let foreign = store.root().join("media/local-notes.txt");
+    fs::write(&foreign, b"keep")?;
+    store.cleanup_imports(&store.load()?)?;
+    assert!(orphan.is_file() && !tmp.exists() && foreign.is_file());
+    assert!(store.media(&id, &item).is_file() && store.thumb(&id).is_file());
+    Ok(())
+}
+
+#[test]
+fn newer_profile_remains_readable_without_losing_unknown_fields() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().into())?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/single.gif");
+    let (id, item) = store.import(&source, |_, _| (), media::thumbnail)?;
+    let mut json: serde_json::Value = serde_json::from_slice(&fs::read(store.profile_path())?)?;
+    json["storage_version"] = 3.into();
+    json["future_preference"] = "unchanged".into();
+    let bytes = serde_json::to_vec(&json)?;
+    fs::write(store.profile_path(), &bytes)?;
+    let (p, writable) = store.read_profile()?;
+    assert!(!writable && p.items[&id] == item);
+    assert_eq!(fs::read(store.profile_path())?, bytes);
+    Ok(())
+}
+
+#[test]
+fn disabling_and_reenabling_preserves_an_explicit_login_opt_out() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().into())?;
+    let p = Profile {
+        autostart: Some(false),
+        disabled: true,
+        ..Default::default()
+    };
+    store.save(&p)?;
+    let mut restored = store.load()?;
+    restored.disabled = false;
+    assert!(!restored.login_enabled());
+    restored.autostart = Some(true);
+    restored.disabled = true;
+    assert!(!restored.login_enabled());
+    restored.disabled = false;
+    assert!(restored.login_enabled());
+    Ok(())
+}
+
+#[test]
+fn missing_profile_and_interrupted_publication_preserve_preexisting_managed_files() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::at(dir.path().join("data"))?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media/landscape.png");
+    let (id, item) = store.import(&source, |_, _| (), media::thumbnail)?;
+    fs::remove_file(store.profile_path())?;
+    let missing = store.load()?;
+    store.cleanup_imports(&missing)?;
+    assert!(store.media(&id, &item).is_file() && store.thumb(&id).is_file());
+
+    let partial = "a".repeat(64);
+    let original = store.root().join("media").join(format!("{partial}.png"));
+    fs::write(&original, b"present before import")?;
+    fs::write(store.thumb(&partial), b"newly published")?;
+    fs::write(
+        store.root().join("import-change.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id": partial, "ext": "png", "new_media": false, "new_thumbnail": true
+        }))?,
+    )?;
+    store.cleanup_imports(&missing)?;
+    assert!(original.is_file() && !store.thumb(&partial).exists());
+    assert!(store.media(&id, &item).is_file() && store.thumb(&id).is_file());
     Ok(())
 }

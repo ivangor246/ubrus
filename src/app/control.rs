@@ -35,6 +35,7 @@ pub struct Output {
 #[serde(default)]
 pub struct Status {
     pub connected: bool,
+    pub preview_visible: Option<bool>,
     pub outputs: Vec<Output>,
     pub engine: serde_json::Value,
     pub error: String,
@@ -63,6 +64,8 @@ pub struct Control {
     registration: RefCell<Option<gio::RegistrationId>>,
     native_launcher: Option<tempfile::TempDir>,
     pub writable: bool,
+    settings_open: Cell<bool>,
+    _writer: Option<std::fs::File>,
 }
 
 fn native_launcher() -> Result<Option<tempfile::TempDir>> {
@@ -88,18 +91,35 @@ impl Control {
             store.log(&format!("Cannot register the native renderer: {error:#}"));
             None
         });
-        let (profile, writable, error) = match store.load() {
-            Ok(mut p) => {
+        let writer = store.try_writer();
+        let (profile, writable, error) = match store.read_profile() {
+            Ok((mut p, true)) if matches!(writer, Ok(Some(_))) => {
+                if let Err(e) = crate::desktop::background::recover(store.root(), p.system_wallpaper.as_ref()) {
+                    store.log(&format!("Wallpaper recovery: {e:#}"));
+                }
+                if let Err(e) = store.cleanup_imports(&p) {
+                    store.log(&format!("Interrupted import cleanup: {e:#}"));
+                }
                 if let Err(e) = store.finish_deletions(&mut p) {
                     store.log(&format!("Library cleanup: {e:#}"));
                 }
                 (p, true, String::new())
             }
-            Err(e) => {
-                store.log(&format!("{e:#}"));
-                (Profile::default(), false, format!("{e:#}"))
+            Ok((p, false)) => (p, false, String::from("Unsupported saved profile version")),
+            Ok((p, true)) => {
+                let reason = match &writer {
+                    Err(error) => format!("Cannot lock the wallpaper library: {error:#}"),
+                    _ => String::from(
+                        "Another login session is using the wallpaper library. Reopen Ubrus after it exits.",
+                    ),
+                };
+                (p, false, reason)
             }
+            Err(e) => (Profile::default(), false, format!("{e:#}")),
         };
+        if !writable && !error.is_empty() {
+            store.log(&error);
+        }
         let this = Rc::new(Self {
             pending: RefCell::default(),
             serial: Cell::new(0),
@@ -118,6 +138,8 @@ impl Control {
             native_launcher,
             notify: RefCell::default(),
             writable,
+            settings_open: Cell::new(false),
+            _writer: writer.ok().flatten().filter(|_| writable),
         });
         let bus = app.dbus_connection().context("A graphical session bus is required")?;
         let info = gio::DBusNodeInfo::for_xml(XML)?.lookup_interface(IFACE).unwrap();
@@ -247,10 +269,11 @@ impl Control {
     pub async fn apply(&self, screen: String, choice: Choice) -> Result<()> {
         let mut profile = self.profile.borrow().clone();
         profile.assign(&screen, choice)?;
-        self.publish(screen, profile).await
+        let staged = self.store.stage_profile(&profile)?;
+        self.publish(screen, profile, staged).await
     }
 
-    pub async fn publish(&self, screen: String, profile: Profile) -> Result<()> {
+    pub async fn publish(&self, screen: String, profile: Profile, staged: tempfile::NamedTempFile) -> Result<()> {
         anyhow::ensure!(self.pending.borrow().is_none(), "Another change is in progress");
         anyhow::ensure!(
             self.status.borrow().framing || profile.screens.values().all(|c| c.frame == Default::default()),
@@ -270,10 +293,7 @@ impl Control {
         self.pending.borrow_mut().take();
         let result = (|| {
             confirmed??.map_err(anyhow::Error::msg)?;
-            self.commit(|p| {
-                *p = profile;
-                Ok(())
-            })
+            self.commit_staged(profile, staged)
         })();
         if result.is_err() {
             self.signal("Changed");
@@ -286,11 +306,16 @@ impl Control {
         let serial = pending.as_ref().map_or(0, |t| t.serial);
         let p = pending.as_ref().map_or(&*saved, |t| &t.profile);
         json!({"version":1, "serial":serial, "target":pending.as_ref().map(|t| &t.screen),
-            "profile_path":self.store.profile_path(), "snap":std::env::var_os("SNAP").is_some(),
+            "settings_pid":self.settings_open.get().then(std::process::id), "profile_path":self.store.profile_path(), "snap":std::env::var_os("SNAP").is_some(),
             "native_launcher":self.native_launcher.as_ref().and_then(|dir| dir.path().file_name()?.to_str()),
             "wake_dir":std::env::var_os("SNAP_USER_COMMON").map(std::path::PathBuf::from),
             "screens":self.store.screen_paths(p, false), "paused":p.paused, "power":p.power,
             "panel":p.panel(), "pause_in_overview":p.pause_in_overview})
+    }
+    pub fn settings_open(&self, open: bool) {
+        if self.settings_open.replace(open) != open {
+            self.signal("Changed");
+        }
     }
     pub fn signal(&self, name: &str) {
         if std::env::var_os("SNAP").is_some() {
@@ -318,13 +343,23 @@ impl Control {
         anyhow::ensure!(self.writable, "Repair the saved profile before changing settings");
         let mut p = self.profile.borrow().clone();
         edit(&mut p)?;
-        let old = self.profile.borrow().autostart;
-        if old != p.autostart {
-            set_login(p.autostart == Some(true))?;
+        let staged = self.store.stage_profile(&p)?;
+        self.save_staged(p, staged)
+    }
+    pub fn commit_staged(&self, p: Profile, staged: tempfile::NamedTempFile) -> Result<()> {
+        self.save_staged(p, staged)?;
+        self.signal("Changed");
+        Ok(())
+    }
+    fn save_staged(&self, p: Profile, staged: tempfile::NamedTempFile) -> Result<()> {
+        anyhow::ensure!(self.writable, "Read-only saved profile");
+        let old = self.profile.borrow().login_enabled();
+        if old != p.login_enabled() {
+            set_login(p.login_enabled())?;
         }
-        if let Err(err) = self.store.save(&p) {
-            if old != p.autostart {
-                let _ = set_login(old == Some(true));
+        if let Err(err) = self.store.publish_profile(staged) {
+            if old != p.login_enabled() {
+                let _ = set_login(old);
             }
             return Err(err);
         }
@@ -332,6 +367,19 @@ impl Control {
         self.keep_alive();
         Ok(())
     }
+    pub fn import(&self, prepared: crate::library::PreparedImport) -> Result<String> {
+        anyhow::ensure!(self.writable, "Repair the saved profile before importing");
+        self.store.commit_import(&mut self.profile.borrow_mut(), prepared)
+    }
+
+    pub async fn finish_wallpaper_change(&self) -> Result<bool> {
+        let library = self.store.clone();
+        let current = self.profile.borrow().system_wallpaper.clone();
+        gio::spawn_blocking(move || crate::desktop::background::recover(library.root(), current.as_ref()))
+            .await
+            .map_err(|_| anyhow::anyhow!("Wallpaper recovery worker failed"))?
+    }
+
     pub fn restart(&self) {
         if crate::desktop::updates::binary_changed() {
             crate::desktop::updates::request_restart();

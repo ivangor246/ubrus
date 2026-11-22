@@ -1,6 +1,6 @@
 use super::{Message, Tab, Ui};
 use crate::{
-    app::{Command, Event, Snapshot},
+    app::{Command, Event, Feedback, Snapshot},
     desktop::portal,
     library::ALL,
     preferences::Text,
@@ -45,7 +45,14 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 screen: ALL.into(),
                 selected,
                 delete_confirmation: None,
+                matching: library_order.clone(),
                 library_order,
+                search: String::new(),
+                loading_thumbnails: false,
+                library_revision: 0,
+                focused: true,
+                importing: false,
+                import_cancel_requested: false,
                 thumbnails: Default::default(),
                 framing: Default::default(),
                 size: iced::Size::new(900., 600.),
@@ -54,6 +61,7 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 editing: false,
                 more: false,
                 offset: Default::default(),
+                gallery_height: None,
                 drag: None,
                 pointer: iced::Point::ORIGIN,
                 poster: None,
@@ -61,7 +69,7 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 update_available: false,
                 shell_update: false,
                 fit: initial.profile.screens.get(ALL).is_some_and(|c| c.fit),
-                feedback: (!initial.writable).then_some(Text::Damaged),
+                feedback: (!initial.writable).then_some(Feedback::Message(Text::Damaged)),
                 report: Default::default(),
                 saved_report: None,
                 busy: false,
@@ -71,9 +79,13 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 playback: None,
                 frame: None,
             };
-            ui.sync_thumbnails();
             ui.load_choice();
-            let task = Task::batch([ui.open(), Task::run(events.clone(), |e| Message::Event(Box::new(e)))]);
+            ui.check_updates();
+            let task = Task::batch([
+                ui.open(),
+                ui.sync_thumbnails(),
+                Task::run(events.clone(), |e| Message::Event(Box::new(e))),
+            ]);
             (ui, task)
         },
         Ui::update,
@@ -90,8 +102,11 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 Subscription::none()
             },
             window::resize_events().map(|(_, size)| Message::Resize(size)),
-            window::events()
-                .filter_map(|(_, event)| matches!(event, window::Event::Focused).then_some(Message::CheckUpdates)),
+            window::events().filter_map(|(id, event)| match event {
+                window::Event::Focused => Some(Message::CheckUpdates),
+                window::Event::Unfocused => Some(Message::Unfocused(id)),
+                _ => None,
+            }),
             window::close_requests().map(Message::Close),
             keyboard::listen().filter_map(shortcut),
         ])
@@ -110,6 +125,8 @@ fn shortcut(event: keyboard::Event) -> Option<Message> {
         }
         if modifiers.is_empty() {
             match key.as_ref() {
+                keyboard::Key::Named(keyboard::key::Named::PageDown) => return Some(Message::GalleryPage(true)),
+                keyboard::Key::Named(keyboard::key::Named::PageUp) => return Some(Message::GalleryPage(false)),
                 keyboard::Key::Named(keyboard::key::Named::Delete) => return Some(Message::RequestDelete),
                 keyboard::Key::Named(keyboard::key::Named::Enter) => return Some(Message::AcceptDelete),
                 _ => {}

@@ -75,13 +75,18 @@ export class RendererWindows {
         }
         if (entry.timer) return;
         const rect = entry.window.get_frame_rect();
-        if (rect.x === m.x && rect.y === m.y && rect.width === m.width && rect.height === m.height) {
+        const currentMonitor = entry.window.get_monitor();
+        if (
+            currentMonitor === m.index &&
+            rect.x === m.x && rect.y === m.y && rect.width === m.width && rect.height === m.height
+        ) {
             entry.attempts = 0;
             return;
         }
-        // On Wayland the first configure can still use GTK's previous minimum size.
-        // Give GTK time to publish the new limits before checking the actual frame.
+        // After an output reorder Mutter keeps the window on its old physical monitor.
+        // Select the new logical monitor before giving the Wayland client its frame.
         if (entry.attempts >= 5) return;
+        if (currentMonitor >= 0 && currentMonitor !== m.index) entry.window.move_to_monitor(m.index);
         entry.window.move_resize_frame(false, ...geometry);
         entry.timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100 * 2 ** entry.attempts++, () => {
             entry.timer = 0;

@@ -37,3 +37,21 @@ export function workspaceCoverage(enabled) {
     return (area, surfaceObscured) =>
         covered(area, fullscreen) || covered(area, opaque) || (surfaceObscured && covered(area, rects));
 }
+
+// Mutter tracks occlusion on the subsurface that actually presents the client buffer.
+export function previewVisible(pid) {
+    if (!pid) return null;
+    const actor = global.get_window_actors().find(a =>
+        a.meta_window.get_pid() === pid && a.meta_window.get_title() === 'Ubrus');
+    if (!actor) return null;
+    const window = actor.meta_window;
+    const workspace = global.workspace_manager.get_active_workspace();
+    if (window.minimized || !window.located_on_workspace(workspace) || !window.showing_on_its_workspace()) return false;
+    const stack = [actor];
+    while (stack.length) {
+        const child = stack.pop();
+        if (typeof child.is_obscured === 'boolean') return !child.is_obscured;
+        stack.push(...child.get_children());
+    }
+    return true;
+}

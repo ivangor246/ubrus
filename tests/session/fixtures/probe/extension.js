@@ -116,6 +116,7 @@ export default class Probe extends Extension {
                     w.is_fullscreen(),
                     w.get_pid(),
                     surfaces(w.get_compositor_private()),
+                    w.get_monitor(),
                 ];
             }),
         });

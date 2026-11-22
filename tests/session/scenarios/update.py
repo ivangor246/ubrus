@@ -5,15 +5,17 @@ import json
 import hashlib
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from desktop_session import MEDIA_DIR, PROJECT_ROOT, wait_for
 from .x11_settings import SettingsWindow
 
 
 def check_update(session, start_shell):
-    package = max(
-        (PROJECT_ROOT / 'dist').glob('ubrus_*_amd64.deb'), key=lambda p: p.stat().st_mtime
-    )
+    with (PROJECT_ROOT / 'Cargo.toml').open('rb') as manifest:
+        version = tomllib.load(manifest)['package']['version']
+    arch = subprocess.check_output(['dpkg', '--print-architecture'], text=True).strip()
+    package = PROJECT_ROOT / 'dist' / f'ubrus_{version}_{arch}.deb'
     old = session.runtime_dir / 'installed'
     new = session.runtime_dir / 'replacement'
     for dest in [old, new]:

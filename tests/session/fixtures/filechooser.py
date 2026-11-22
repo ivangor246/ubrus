@@ -1,5 +1,6 @@
 """Serve fixture paths through a private file chooser portal."""
 
+import json
 import os
 from pathlib import Path
 
@@ -37,14 +38,21 @@ def main() -> None:
     selection = Path(os.environ['XDG_RUNTIME_DIR']) / 'ubrus-test-selection'
 
     def choose(_bus, _sender, _path, _interface, _method, arguments, reply):
-        _, _, parent_window, _, _ = arguments.unpack()
+        _, _, parent_window, _, options = arguments.unpack()
         try:
             selection.with_suffix('.parent').write_text(parent_window, encoding='utf-8')
-            uri = Path(selection.read_text(encoding='utf-8')).as_uri()
+            multiple = selection.with_suffix('.json')
+            if multiple.is_file() and _method == 'OpenFile':
+                if not options.get('multiple'):
+                    raise ValueError('Expected a multi-file request')
+                paths = json.loads(multiple.read_text(encoding='utf-8'))
+            else:
+                paths = [selection.read_text(encoding='utf-8')]
+            uris = [Path(path).as_uri() for path in paths]
         except (OSError, ValueError) as error:
             reply.return_dbus_error('org.freedesktop.DBus.Error.Failed', str(error))
             return
-        results = {'uris': GLib.Variant('as', [uri])}
+        results = {'uris': GLib.Variant('as', uris)}
         reply.return_value(GLib.Variant('(ua{sv})', (0, results)))
 
     bus = Gio.bus_get_sync(Gio.BusType.SESSION)

@@ -8,7 +8,7 @@ use iced::{
     Alignment, Color, ContentFit, Element, Fill, Rectangle, Theme,
     widget::{
         button, checkbox, column, container, grid, image, mouse_area, pick_list, pin, progress_bar, responsive, row,
-        rule, scrollable, slider, space, text, text_editor,
+        rule, scrollable, slider, space, text, text_editor, text_input,
     },
     window,
 };
@@ -79,14 +79,12 @@ impl Ui {
             .center(Fill)
             .into();
         }
-        let (symbol, label, color): (&str, Text, fn(&Theme) -> Color) = if p.disabled {
-            ("○", Text::Disabled, style::muted)
-        } else if !p.visible() || p.screens.is_empty() {
-            ("–", Text::Hidden, style::muted)
-        } else if p.paused && p.has_animation() {
-            ("Ⅱ", Text::Paused, |theme| theme.palette().warning)
-        } else {
-            ("●", Text::Running, |theme| theme.palette().success)
+        let label = crate::app::diagnostics::wallpaper_status(p, &self.data.status);
+        let color: fn(&Theme) -> Color = match label {
+            Text::Running => |theme: &Theme| theme.palette().success,
+            Text::RendererError => |theme: &Theme| theme.palette().danger,
+            Text::RendererWaiting | Text::Offline => |theme: &Theme| theme.palette().warning,
+            _ => style::muted,
         };
         let mut header = row![
             image(artwork::brand()).width(36).height(36),
@@ -96,11 +94,9 @@ impl Ui {
                     ..Default::default()
                 })
                 .size(25),
-            text(format!("{symbol} {}", locale.get(label)))
-                .size(14)
-                .style(move |theme| text::Style {
-                    color: Some(color(theme))
-                }),
+            text(locale.get(label)).size(14).style(move |theme| text::Style {
+                color: Some(color(theme))
+            }),
             space::horizontal()
         ]
         .spacing(9)
@@ -122,32 +118,66 @@ impl Ui {
         if let Some(n) = self.progress {
             page = page.push(progress_bar(0.0..=100., n.into()).girth(4));
         }
-        if let Some(msg) = self
-            .feedback
-            .or_else(|| (!self.data.status.error.is_empty()).then_some(Text::FailedService))
-        {
-            page = page.push(text(locale.get(msg)).size(13));
+        if self.importing {
+            page = page.push(self.command(
+                Text::CancelImport,
+                "back",
+                (!self.import_cancel_requested).then_some(Message::CancelImport),
+            ));
+        }
+        if let Some(feedback) = self.feedback.or_else(|| {
+            (!self.data.status.error.is_empty()).then_some(crate::app::Feedback::Message(Text::FailedService))
+        }) {
+            let msg = feedback.key();
+            let mut notice = row![text(feedback.localize(locale)).size(13)]
+                .align_y(Alignment::Center)
+                .spacing(8);
+            if self.tab != Tab::Diagnostics
+                && (self.feedback.is_none()
+                    || matches!(feedback, crate::app::Feedback::ImportBatch { failed, .. } if failed > 0)
+                    || matches!(
+                        msg,
+                        Text::Extension
+                            | Text::FailedApply
+                            | Text::FailedImport
+                            | Text::FailedSave
+                            | Text::FailedPreview
+                            | Text::FailedDelete
+                            | Text::FailedExport
+                            | Text::FailedClear
+                            | Text::Damaged
+                            | Text::ShellUpdate
+                    ))
+            {
+                notice = notice.push(self.command(Text::Diagnostics, "report", Some(Message::Tab(Tab::Diagnostics))));
+            }
+            page = page.push(notice);
         }
         container(page).padding([14, 20]).width(Fill).height(Fill).into()
     }
 
     fn diagnostics(&self, l: Locale) -> View<'_> {
-        let t = |k| l.get(k);
+        let action = |label, message: Option<Message>| {
+            focus::action(
+                button(l.get(label))
+                    .style(style::primary)
+                    .on_press_maybe(message.clone()),
+                message,
+            )
+        };
         column![
-            text(t(Text::Diagnostics)).size(23),
             row![
-                button(t(Text::Refresh))
-                    .style(style::primary)
-                    .on_press(Message::Inspect),
-                button(t(Text::CopyAll))
-                    .style(style::primary)
-                    .on_press(Message::CopyReport),
-                button(t(Text::Export))
-                    .style(style::primary)
-                    .on_press_maybe((!self.busy).then_some(Message::Export)),
-                button(t(Text::SaveAs))
-                    .style(style::primary)
-                    .on_press_maybe((!self.busy).then_some(Message::ExportAs))
+                text(l.get(Text::Diagnostics)).size(23),
+                space::horizontal(),
+                action(Text::CopyPublicReport, Some(Message::CopyPublicReport))
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            row![
+                action(Text::Refresh, Some(Message::Inspect)),
+                action(Text::CopyAll, Some(Message::CopyReport)),
+                action(Text::Export, (!self.busy).then_some(Message::Export)),
+                action(Text::SaveAs, (!self.busy).then_some(Message::ExportAs))
             ]
             .spacing(8)
             .wrap(),
@@ -182,7 +212,7 @@ impl Ui {
                 "power",
                 edit.then_some(Message::Enabled(p.disabled))
             ),
-            toggle(p.autostart.unwrap_or(false), t(Text::Login), edit && !p.disabled, |v| {
+            toggle(p.login_enabled(), t(Text::Login), edit && !p.disabled, |v| {
                 Message::Set(Preference::Login(v))
             }),
             toggle(!p.hide_indicator, t(Text::Panel), edit, |v| Message::Set(
@@ -222,8 +252,8 @@ impl Ui {
         if self.update_available {
             notice = notice.push(self.command(Text::Update, "update", (!self.busy).then_some(Message::Restart)));
         }
-        if self.shell_update {
-            notice = notice.push(text(t(Text::ShellUpdate)).size(14));
+        if self.shell_update || !self.data.status.connected {
+            notice = notice.push(self.extension_guide(l));
         }
         scrollable(container(notice.push(settings)).max_width(680).padding(12))
             .height(Fill)
@@ -265,8 +295,12 @@ impl Ui {
         if !wide && self.editing {
             return self.editor(l, false);
         }
-        let mut tiles = grid([]).fluid(186).spacing(10).height(grid::aspect_ratio(186, 140));
-        for id in &self.library_order {
+        let page = self.gallery_page();
+        let mut tiles = grid([])
+            .columns(page.columns)
+            .spacing(super::gallery::GAP)
+            .height(iced::Length::Shrink);
+        for id in &self.matching[page.first..page.end] {
             let item = &p.items[id];
             let mut caption = row![filename(&item.name, 14, 21)].spacing(4);
             if p.visible() && p.screens.values().any(|c| &c.id == id) {
@@ -287,11 +321,12 @@ impl Ui {
             .spacing(7);
             let selected = self.selected.as_ref() == Some(id);
             let select = Message::Select(id.clone());
-            tiles = tiles.push(focus::action(
+            tiles = tiles.push(focus::named_action(
+                id.clone(),
                 button(tile)
                     .padding(7)
                     .width(Fill)
-                    .height(Fill)
+                    .height(super::gallery::TILE_HEIGHT)
                     .clip(true)
                     .style(move |theme, status| {
                         let mut s = style::subtle(theme, status);
@@ -306,15 +341,20 @@ impl Ui {
                         s
                     })
                     .on_press(select.clone()),
-                Some(select),
+                select,
             ));
         }
         let gallery = column![
             row![text(l.get(Text::Library)).size(23), space::horizontal(), import].align_y(Alignment::Center),
-            scrollable(tiles)
-                .id("library")
-                .on_scroll(|v| Message::Scrolled(v.absolute_offset()))
-                .height(Fill)
+            text_input(l.get(Text::Search), &self.search).on_input(Message::Search),
+            scrollable(if self.matching.is_empty() {
+                column![text(l.get(Text::NoMatches)).size(15)]
+            } else {
+                column![space().height(page.before), tiles, space().height(page.after)]
+            })
+            .id("library")
+            .on_scroll(|v| Message::Scrolled(v.absolute_offset(), v.bounds().height))
+            .height(Fill)
         ]
         .spacing(12)
         .width(Fill)
@@ -331,6 +371,37 @@ impl Ui {
         } else {
             gallery.into()
         }
+    }
+
+    pub(super) fn extension_command(&self) -> &'static str {
+        if std::env::var_os("SNAP").is_some() {
+            "gnome-extensions install --force /snap/ubrus/current/share/ubrus/ubrus-extension.zip"
+        } else if crate::desktop::updates::installed_executable().is_none() {
+            "gnome-extensions install --force ./ubrus-extension.zip"
+        } else {
+            "gnome-extensions enable wallpaper@ubrus.org"
+        }
+    }
+
+    fn extension_guide(&self, locale: Locale) -> View<'_> {
+        let snap = std::env::var_os("SNAP").is_some();
+        let installed = crate::desktop::updates::installed_executable().is_some();
+        let guide = if snap {
+            Text::GuideSnap
+        } else if !installed {
+            Text::GuideStandalone
+        } else if self.shell_update {
+            Text::ShellUpdate
+        } else {
+            Text::GuideDeb
+        };
+        let mut controls = column![text(locale.get(guide)).size(14)].spacing(4);
+        if snap || !installed || !self.shell_update {
+            controls = controls
+                .push(text(self.extension_command()).font(iced::Font::MONOSPACE).size(12))
+                .push(self.command(Text::CopyCommand, "report", Some(Message::CopyExtensionCommand)));
+        }
+        controls.into()
     }
 
     fn editor(&self, l: Locale, wide: bool) -> View<'_> {
@@ -439,7 +510,14 @@ impl Ui {
                     Some(Message::Preview),
                 ));
         }
+        let needs_extension = item.animated() || self.screen != ALL;
         let mut menu = column![].spacing(3);
+        if (needs_extension && !self.data.status.connected) || self.shell_update {
+            menu = menu.push(self.extension_guide(l));
+        }
+        if self.screen == ALL && self.data.profile.screens.keys().any(|id| id != ALL) {
+            menu = menu.push(text(l.get(Text::ReplacesDisplays)).size(14));
+        }
         if self.more {
             menu = menu
                 .push(self.command(Text::Reset, "reset", Some(Message::Reset)))
@@ -450,7 +528,11 @@ impl Ui {
             self.command(Text::More, "more", Some(Message::More)),
             space::horizontal(),
             {
-                let press = (edit && !self.data.profile.disabled && self.available()).then_some(Message::Apply);
+                let press = (edit
+                    && !self.data.profile.disabled
+                    && self.available()
+                    && (!needs_extension || self.data.status.connected))
+                    .then_some(Message::Apply);
                 focus::action(
                     button(t(Text::Apply))
                         .style(style::primary)

@@ -102,7 +102,8 @@ impl WallpaperSurface {
             self.viewport.queue_allocate();
             self.viewport.queue_draw();
         }
-        self.window.set_size_request(screen.width.max(1), screen.height.max(1));
+        // Shell can configure a smaller frame before GTK receives the new layout.
+        // Use the monitor as the default size and leave the Wayland minimum unconstrained.
         self.window.set_default_size(screen.width.max(1), screen.height.max(1));
         self.window.set_visible(true);
         self.displayed = Some(key);

@@ -2,6 +2,8 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 const empty = () => ({ version: 1, screens: {}, power: false, paused: false });
+// A disabled extension can still have an asynchronous replacement in flight.
+let pendingWrite = Promise.resolve();
 
 function validStills(scene) {
     return (
@@ -33,6 +35,8 @@ export class StillCache {
         ),
     ) {
         this.saved = null;
+        this.generation = 0;
+        this.writes = Promise.resolve();
         this.profilePath = null;
         this.committed = empty();
         this.file = file;
@@ -51,26 +55,32 @@ export class StillCache {
     }
 
     observe(scene) {
+        this.generation++;
         this.profilePath = scene.profile_path;
         if (!scene.serial) this.remember(this.stillScene(scene));
     }
 
-    recover() {
+    async recover() {
+        const generation = ++this.generation;
         // The controller can exit after its atomic commit and before Shell receives Changed.
         if (this.profilePath) {
             try {
                 const file = Gio.File.new_for_path(this.profilePath);
-                const { wallpaper_stills: still } = JSON.parse(
-                    new TextDecoder().decode(file.load_contents(null)[1]),
-                );
-                if (validStills(still)) this.remember({ ...still, profile_path: this.profilePath });
+                const contents = await new Promise((resolve, reject) =>
+                    file.load_contents_async(null, (source, result) => {
+                        try { resolve(source.load_contents_finish(result)[1]); }
+                        catch (error) { reject(error); }
+                    }));
+                if (generation !== this.generation) return null;
+                const { wallpaper_stills: still } = JSON.parse(new TextDecoder().decode(contents));
+                if (validStills(still)) this.remember({ ...still, snap: this.committed.snap, profile_path: this.profilePath });
             } catch {} // Older or damaged profiles retain the last confirmed Shell cache.
         }
-        return this.available();
+        return generation === this.generation ? this.available() : null;
     }
 
     stillScene(scene) {
-        const still = { version: 1, panel: scene.panel, profile_path: scene.profile_path, screens: {} };
+        const still = { version: 1, panel: scene.panel, snap: scene.snap, profile_path: scene.profile_path, screens: {} };
         for (const [id, s] of Object.entries(scene.screens)) {
             still.screens[id] = s.animated ? { ...s, animated: false, path: s.poster } : s;
         }
@@ -81,12 +91,19 @@ export class StillCache {
         this.committed = still;
         const data = JSON.stringify(still);
         if (data === this.saved) return;
-        try {
+        this.saved = data;
+        pendingWrite = this.writes = pendingWrite.then(async () => {
+            if (data !== this.saved) return;
             GLib.mkdir_with_parents(this.file.get_parent().get_path(), 0o700);
-            this.file.replace_contents(data, null, false, Gio.FileCreateFlags.PRIVATE, null);
-            this.saved = data;
-        } catch (e) {
-            console.warn(`[Ubrus] Cannot cache wallpaper: ${e.message}`);
-        }
+            await new Promise((resolve, reject) =>
+                this.file.replace_contents_bytes_async(new GLib.Bytes(new TextEncoder().encode(data)), null,
+                    false, Gio.FileCreateFlags.PRIVATE, null, (file, result) => {
+                        try { file.replace_contents_finish(result); resolve(); }
+                        catch (error) { reject(error); }
+                    }));
+        }).catch(error => {
+            if (this.saved === data) this.saved = null;
+            console.warn(`[Ubrus] Cannot cache wallpaper: ${error.message}`);
+        });
     }
 }

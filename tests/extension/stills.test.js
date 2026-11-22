@@ -18,15 +18,16 @@ try {
     for (const image of [poster, next]) GLib.file_set_contents(image.get_path(), '');
     const live = new StillCache(cache);
     live.observe(scene({ '*': { animated: true, path: '/library/loop.webm', poster: poster.get_path() } }));
+    await live.writes;
     expectPath(new StillCache(cache).available(), poster.get_path());
 
     live.observe({ ...scene(committedScreens(next.get_path())), serial: 42 });
-    expectPath(live.recover(), poster.get_path());
+    expectPath(await live.recover(), poster.get_path());
     GLib.file_set_contents(
         profile.get_path(),
         JSON.stringify({ wallpaper_stills: { version: 1, screens: { '*': null } } }),
     );
-    expectPath(live.recover(), poster.get_path());
+    expectPath(await live.recover(), poster.get_path());
 
     GLib.file_set_contents(
         profile.get_path(),
@@ -34,7 +35,8 @@ try {
             wallpaper_stills: { version: 1, screens: committedScreens(next.get_path()) },
         }),
     );
-    expectPath(live.recover(), next.get_path());
+    expectPath(await live.recover(), next.get_path());
+    await live.writes;
     next.delete(null);
     expectPath(new StillCache(cache).available(), undefined);
     GLib.file_set_contents(next.get_path(), '');
@@ -42,7 +44,9 @@ try {
         profile.get_path(),
         JSON.stringify({ wallpaper_stills: { version: 1, screens: {} } }),
     );
-    expectPath(new StillCache(cache).recover(), undefined);
+    const recovered = new StillCache(cache);
+    expectPath(await recovered.recover(), undefined);
+    await recovered.writes;
     expectPath(new StillCache(cache).available(), undefined);
     print('Wallpaper recovery before and after a profile commit passed');
 } finally {

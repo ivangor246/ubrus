@@ -2,7 +2,7 @@ use anyhow::Result;
 use gtk::{
     gdk,
     gdk_pixbuf::{PixbufAnimation, PixbufAnimationIter},
-    glib,
+    gio, glib,
     prelude::*,
     subclass::prelude::*,
 };
@@ -58,14 +58,20 @@ pub struct Gif {
     pub decoded: Cell<u64>,
 }
 impl Gif {
-    pub fn open(path: &Path, speed: u16) -> Result<Rc<Self>> {
-        let animation = PixbufAnimation::from_file(path)?;
+    #[cfg(test)]
+    fn open(path: &Path, speed: u16) -> Result<Rc<Self>> {
+        glib::MainContext::default().block_on(Self::load(path, speed, glib::Object::new()))
+    }
+
+    pub async fn load(path: &Path, speed: u16, frames: Frames) -> Result<Rc<Self>> {
+        let input = gio::File::for_path(path).read_future(glib::Priority::DEFAULT).await?;
+        let animation = PixbufAnimation::from_stream_future(&input).await?;
         let iter = animation.iter(Some(SystemTime::UNIX_EPOCH));
         let this = Rc::new(Self {
             rate: f64::from(speed) / 100.,
             animation,
             iter: iter.into(),
-            frames: glib::Object::new(),
+            frames,
             timer: RefCell::default(),
             elapsed: Cell::new(Duration::ZERO),
             started: Cell::new(None),
@@ -77,7 +83,19 @@ impl Gif {
     fn frame(&self) {
         let pixbuf = self.iter.borrow().pixbuf();
         // The iterator reuses its compositing buffer. Each published texture owns a stable frame.
-        let texture = gdk::Texture::for_pixbuf(&pixbuf.copy().unwrap_or(pixbuf));
+        let format = if pixbuf.has_alpha() {
+            gdk::MemoryFormat::R8g8b8a8
+        } else {
+            gdk::MemoryFormat::R8g8b8
+        };
+        let texture = gdk::MemoryTexture::new(
+            pixbuf.width(),
+            pixbuf.height(),
+            format,
+            &pixbuf.read_pixel_bytes(),
+            pixbuf.rowstride() as usize,
+        )
+        .upcast();
         *self.frames.imp().0.borrow_mut() = Some(texture);
         self.frames.invalidate_contents();
         self.decoded.set(self.decoded.get() + 1);

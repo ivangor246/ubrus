@@ -1,24 +1,31 @@
-use super::{Action, Event, control::Control, diagnostics};
+use super::{Action, Event, Feedback, control::Control, diagnostics};
 use crate::{
     desktop::{background::SystemWallpaper, portal},
     library::ALL,
-    media,
     preferences::Text,
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use ashpd::WindowIdentifier;
 use async_channel::Sender;
 use gtk::{gio, glib, prelude::*};
-use std::cell::Cell;
 
 type Outcome = (Option<Text>, Option<String>);
-pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome>, fallback: Text, from_panel: bool) {
+pub(super) fn finish(
+    c: &Control,
+    events: &Sender<Event>,
+    result: Result<(Option<Feedback>, Option<String>)>,
+    fallback: Text,
+    from_panel: bool,
+) {
     let (feedback, selected) = result.unwrap_or_else(|e| {
         if matches!(
             e.downcast_ref::<ashpd::Error>(),
             Some(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled))
         ) {
-            return ((fallback == Text::FailedApply).then_some(Text::Declined), None);
+            return (
+                (fallback == Text::FailedApply).then_some(Feedback::Message(Text::Declined)),
+                None,
+            );
         }
         let technical = format!("{e:#}");
         c.store.log(&technical);
@@ -32,7 +39,7 @@ pub(super) fn finish(c: &Control, events: &Sender<Event>, result: Result<Outcome
             _ if e.downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(28) => Text::DiskFull,
             _ => fallback,
         };
-        (Some(message), None)
+        (Some(Feedback::Message(message)), None)
     });
     let _ = events.try_send(Event::Done {
         from_panel,
@@ -50,24 +57,28 @@ async fn install_picture(
     c: &Control,
     path: std::path::PathBuf,
     choice: crate::library::Choice,
+    next: &mut crate::library::Profile,
     parent: Option<WindowIdentifier>,
     size: (i32, i32),
-) -> Result<SystemWallpaper> {
+) -> Result<tempfile::NamedTempFile> {
     let previous = c.profile.borrow().system_wallpaper.clone();
     let store = c.store.clone();
     let (tmp, background) = gio::spawn_blocking(move || -> Result<_> {
         let tmp = portal::system_picture(&path, &choice, size.0, size.1)?;
-        let background = SystemWallpaper::capture(previous.as_ref(), tmp.path(), store.root())?;
+        let background = SystemWallpaper::prepare_install(previous.as_ref(), tmp.path(), store.root())?;
         Ok((tmp, background))
     })
     .await
     .map_err(|_| anyhow!("Image worker failed"))??;
+    next.system_wallpaper = Some(background);
+    // Reserve and flush the complete candidate before the portal changes the shared host image.
+    let staged = c.store.stage_profile(next)?;
     glib::future_with_timeout(
         std::time::Duration::from_secs(180),
         portal::wallpaper(parent, tmp.path()),
     )
     .await??;
-    Ok(background)
+    Ok(staged)
 }
 
 pub(super) async fn perform(
@@ -77,34 +88,43 @@ pub(super) async fn perform(
     parent: Option<WindowIdentifier>,
     size: (i32, i32),
 ) -> Result<Outcome> {
+    let changes_wallpaper = matches!(
+        action,
+        Action::Apply(..) | Action::Visible(_) | Action::Enabled(_) | Action::Delete(_)
+    );
+    ensure!(!changes_wallpaper || c.writable, "Read-only saved profile");
+    if changes_wallpaper && crate::desktop::background::pending(c.store.root())? {
+        c.finish_wallpaper_change().await?;
+    }
+    let result = perform_action(c, events, action, parent, size).await;
+    if changes_wallpaper && crate::desktop::background::pending(c.store.root())? {
+        let restored = c.finish_wallpaper_change().await?;
+        if !restored {
+            return result.map(|(feedback, selected)| {
+                (
+                    Some(if feedback == Some(Text::DeleteCleanup) {
+                        Text::DeleteCleanup
+                    } else {
+                        Text::OwnershipUnknown
+                    }),
+                    selected,
+                )
+            });
+        }
+    }
+    result
+}
+
+async fn perform_action(
+    c: &Control,
+    events: &Sender<Event>,
+    action: Action,
+    parent: Option<WindowIdentifier>,
+    size: (i32, i32),
+) -> Result<Outcome> {
     let locale = c.profile.borrow().language.locale();
     match action {
-        Action::Import => {
-            let path = portal::choose(parent, locale, false).await?;
-            let store = c.store.clone();
-            let progress = events.clone();
-            let (id, item) = gio::spawn_blocking(move || {
-                gst::init()?;
-                let last = Cell::new(None);
-                store.import(
-                    &path,
-                    |done, total| {
-                        let percent = (done.saturating_mul(100) / total).min(100) as u8;
-                        if last.replace(Some(percent)) != Some(percent) {
-                            let _ = progress.try_send(Event::Progress(percent));
-                        }
-                    },
-                    media::thumbnail,
-                )
-            })
-            .await
-            .map_err(|_| anyhow!("Import worker failed"))??;
-            c.save(|p| {
-                p.items.entry(id.clone()).or_insert(item);
-                Ok(())
-            })?;
-            Ok((Some(Text::Imported), Some(id)))
-        }
+        Action::Import => unreachable!("Imports are dispatched separately"),
         Action::Apply(screen, choice) => {
             ensure!(!c.profile.borrow().disabled, "Ubrus is disabled");
             let item = c
@@ -121,15 +141,10 @@ pub(super) async fn perform(
                     !c.status.borrow().connected || c.status.borrow().framing || choice.frame == Default::default(),
                     "Extension update required"
                 );
-                let background = install_picture(c, path, choice.clone(), parent, size).await?;
-                let saved = c.commit(|p| {
-                    p.system_wallpaper = Some(background.clone());
-                    p.assign(&screen, choice)
-                });
-                if let Err(error) = saved {
-                    background.restore().await?;
-                    return Err(error);
-                }
+                let mut next = c.profile.borrow().clone();
+                next.assign(&screen, choice.clone())?;
+                let staged = install_picture(c, path, choice, &mut next, parent, size).await?;
+                c.commit_staged(next, staged)?;
             } else {
                 ensure!(c.status.borrow().connected, "Extension required");
                 ensure!(
@@ -154,14 +169,12 @@ pub(super) async fn perform(
                 ensure!(p.items.contains_key(&id), "Unknown library item");
                 p.system_wallpaper.clone().filter(|_| p.restores_desktop_on_delete(&id))
             };
-            let restored = match background {
-                Some(background) => background.restore().await?,
-                None => true,
-            };
+            if let Some(background) = background {
+                crate::desktop::background::prepare_removal(c.store.root(), &background)?;
+            }
             c.commit(|p| p.delete_item(&id))?;
             let feedback = match c.store.finish_deletions(&mut c.profile.borrow_mut()) {
-                Ok(()) if restored => Text::Deleted,
-                Ok(()) => Text::OwnershipUnknown,
+                Ok(()) => Text::Deleted,
                 Err(e) => {
                     c.store.log(&format!("Library cleanup: {e:#}"));
                     Text::DeleteCleanup
@@ -175,17 +188,15 @@ pub(super) async fn perform(
             match action {
                 Action::Enabled(value) => {
                     next.disabled = !value;
-                    next.autostart = Some(value);
                 }
                 Action::Visible(value) => next.hidden = !value,
                 _ => unreachable!(),
             }
-            let mut installed = None;
             let mut confirm = false;
-            let mut restored = true;
+            let mut staged = None;
             if was_visible && !next.visible() {
                 if let Some(background) = next.system_wallpaper.take() {
-                    restored = background.restore().await?;
+                    crate::desktop::background::prepare_removal(c.store.root(), &background)?;
                 }
             } else if !was_visible && next.visible() {
                 for choice in next.screens.values() {
@@ -208,32 +219,26 @@ pub(super) async fn perform(
                 );
                 if let Some(choice) = portal_choice {
                     let path = c.store.media(&choice.id, &next.items[&choice.id]);
-                    installed = Some(install_picture(c, path, choice.clone(), parent, size).await?);
-                    next.system_wallpaper = installed.clone();
+                    staged = Some(install_picture(c, path, choice.clone(), &mut next, parent, size).await?);
                 }
             }
-            let result = if confirm {
-                c.publish(ALL.into(), next).await
-            } else {
-                c.commit(|p| {
-                    *p = next;
-                    Ok(())
-                })
+            let staged = match staged {
+                Some(file) => file,
+                None => c.store.stage_profile(&next)?,
             };
-            if let Err(error) = result {
-                if let Some(background) = installed {
-                    background.restore().await?;
-                }
-                return Err(error);
+            if confirm {
+                c.publish(ALL.into(), next, staged).await?;
+            } else {
+                c.commit_staged(next, staged)?;
             }
-            Ok(((!restored).then_some(Text::OwnershipUnknown), None))
+            Ok((None, None))
         }
         Action::Export | Action::ExportAs => {
             let destination = if matches!(action, Action::ExportAs) {
                 Some(
                     glib::future_with_timeout(
                         std::time::Duration::from_secs(180),
-                        portal::choose(parent, locale, true),
+                        portal::choose_report(parent, locale),
                     )
                     .await??,
                 )

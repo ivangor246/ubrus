@@ -79,6 +79,10 @@ impl Profile {
         self.screens.values().any(|c| self.items[&c.id].animated())
     }
 
+    pub fn login_enabled(&self) -> bool {
+        !self.disabled && self.autostart == Some(true)
+    }
+
     pub fn visible(&self) -> bool {
         !self.disabled && !self.hidden
     }

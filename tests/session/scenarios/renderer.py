@@ -117,14 +117,17 @@ def verify_renderer(session):
                     screen['active'] = False
                 serial += 1
                 send(json.dumps(dict(serial=serial, screens=screens)))
-                await_layout(serial, 2)
-                for _ in range(20):
-                    send('status')
+                # A settled pipeline reports its own transition without an explicit status poll.
+                status = await_layout(serial, 2)
+                while not all(s['paused'] for s in status['streams']):
                     status = await_layout(serial, 2)
-                    if all(s['paused'] for s in status['streams']):
-                        break
-                    time.sleep(0.1)
-                assert all(s['paused'] for s in status['streams'])
+                for screen in screens:
+                    screen['active'] = True
+                serial += 1
+                send(json.dumps(dict(serial=serial, screens=screens)))
+                status = await_layout(serial, 2)
+                while not all(s['playing'] for s in status['streams']):
+                    status = await_layout(serial, 2)
             check_pixels(session, serial + 1, send, await_layout)
             session.log('rendered GIF, WebP, MP4 and WebM at two rates and paused both outputs')
         finally:

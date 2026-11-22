@@ -7,7 +7,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import { DesktopLayers } from './desktop/layers.js';
 import { monitorIdentities } from './desktop/monitors.js';
 import { RendererWindows } from './desktop/windows.js';
-import { workspaceCoverage } from './desktop/visibility.js';
+import { workspaceCoverage, previewVisible } from './desktop/visibility.js';
 import { pauseReason } from './desktop/geometry.js';
 import { ControllerConnection, call } from './controller.js';
 import { StillCache } from './stills.js';
@@ -36,10 +36,20 @@ export default class Wallpaper extends Extension {
         this.error = '';
         this.attempts = 0;
         this.stills = new StillCache();
-        this.scene = this.stills.recover();
+        this.scene = this.stills.available();
         this.panel = new WallpaperPanel(this.dir, command => this.panelAction(command));
         this.panel.sync(this.scene.panel);
         this.monitorIds = new Map();
+        this.logicalMonitors = null;
+        this.monitorHistoryFile = Gio.File.new_for_path(GLib.build_filenamev([
+            GLib.get_user_data_dir(), 'ubrus-shell', 'monitor-identities.json',
+        ]));
+        try {
+            this.savedMonitors = new TextDecoder().decode(this.monitorHistoryFile.load_contents(null)[1]);
+            this.monitorHistory = new Map(JSON.parse(this.savedMonitors));
+        } catch {
+            this.monitorHistory = new Map();
+        }
         this.watch(Main.layoutManager, 'monitors-changed', () => this.layout());
         this.watch(global.display, 'workareas-changed', () => this.queue());
         this.watch(global.display, 'restacked', () => this.queue());
@@ -70,6 +80,7 @@ export default class Wallpaper extends Extension {
                 this.report();
             },
         });
+        this.useStills();
         this.layout();
     }
 
@@ -105,7 +116,8 @@ export default class Wallpaper extends Extension {
                 cancel,
             );
             if (cancel.is_cancelled() || sequence !== this.layoutSerial) return;
-            this.monitorIds = monitorIdentities(logical);
+            this.logicalMonitors = logical;
+            this.identifyMonitors();
             this.layoutReady = true;
         } catch (e) {
             if (cancel.is_cancelled()) return;
@@ -114,9 +126,26 @@ export default class Wallpaper extends Extension {
         this.queue();
     }
 
+    identifyMonitors() {
+        if (!this.logicalMonitors) return;
+        this.monitorIds = monitorIdentities(this.logicalMonitors, this.monitorHistory, this.scene.screens);
+        const serialized = JSON.stringify([...this.monitorHistory]);
+        if (this.savedMonitors === serialized) return;
+        try {
+            GLib.mkdir_with_parents(this.monitorHistoryFile.get_parent().get_path(), 0o700);
+            this.monitorHistoryFile.replace_contents(serialized, null, false, Gio.FileCreateFlags.PRIVATE, null);
+            this.savedMonitors = serialized;
+        } catch (error) {
+            console.warn(`[Ubrus] Cannot save monitor identities: ${error.message}`);
+        }
+    }
+
     panelAction(command) {
         if (!this.controller.online) {
-            const app = Gio.DesktopAppInfo.new('org.ubrus.Ubrus.desktop') ?? Gio.DesktopAppInfo.new('ubrus_org.ubrus.Ubrus.desktop');
+            const snapIds = ['ubrus_ubrus.desktop', 'ubrus_org.ubrus.Ubrus.desktop'];
+            const nativeId = 'org.ubrus.Ubrus.desktop';
+            const ids = this.scene.snap ? [...snapIds, nativeId] : [nativeId, ...snapIds];
+            const app = ids.map(id => Gio.DesktopAppInfo.new(id)).find(Boolean);
             if (!app) return;
             this.pendingPanel = command === 'open' ? null : command;
             app.launch([],null);
@@ -129,6 +158,7 @@ export default class Wallpaper extends Extension {
     acceptScene(scene) {
         this.stills.observe(scene);
         this.scene = scene;
+        this.identifyMonitors();
         this.panel.sync(scene.panel);
         if (this.pendingPanel) {
             const command = this.pendingPanel;
@@ -144,8 +174,18 @@ export default class Wallpaper extends Extension {
     }
 
     useStills() {
-        this.scene = this.stills.recover();
+        const cancel = this.cancel;
+        this.scene = this.stills.available();
         this.panel.sync(this.scene.panel);
+        const recovery = this.stills.recover();
+        const generation = this.stills.generation;
+        recovery.then(scene => {
+            if (!scene || cancel.is_cancelled() || generation !== this.stills.generation) return;
+            this.scene = scene;
+            this.identifyMonitors();
+            this.panel.sync(scene.panel);
+            this.queue();
+        });
         this.applied = 0;
         this.failedSerial = 0;
         this.stop();
@@ -313,6 +353,7 @@ export default class Wallpaper extends Extension {
             {
                 connected: true,
                 framing: true,
+                preview_visible: previewVisible(this.scene.settings_pid),
                 extension_build: this.metadata["build-id"] ?? "development",
                 outputs: this.outputs,
                 engine: this.engine,

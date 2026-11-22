@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use ashpd::{
     WindowIdentifier,
     desktop::{
-        file_chooser::{FileFilter, SelectedFiles},
+        file_chooser::SelectedFiles,
         wallpaper::{SetOn, WallpaperRequest},
     },
 };
@@ -62,43 +62,118 @@ pub fn parent(window: &dyn iced::window::Window) -> Result<Option<WindowIdentifi
     )))
 }
 
-pub async fn choose(parent: Option<WindowIdentifier>, locale: Locale, export: bool) -> Result<PathBuf> {
-    let request = if export {
-        SelectedFiles::save_file()
-            .identifier(parent)
-            .title(locale.get(Text::SaveAs))
-            .accept_label(locale.get(Text::Save))
-            .current_name("ubrus-report.txt")
-            .send()
-            .await?
-    } else {
-        let filter = [
-            "image/png",
-            "image/jpeg",
-            "image/webp",
-            "image/gif",
-            "video/mp4",
-            "video/webm",
-        ]
-        .into_iter()
-        .fold(FileFilter::new(locale.get(Text::Formats)), |filter, mime| {
-            filter.mimetype(mime)
-        });
-        SelectedFiles::open_file()
-            .identifier(parent)
-            .title(locale.get(Text::Import))
-            .accept_label(locale.get(Text::Open))
-            .filter(filter)
-            .multiple(false)
-            .send()
-            .await?
-    };
-    request
+pub async fn choose_report(parent: Option<WindowIdentifier>, locale: Locale) -> Result<PathBuf> {
+    SelectedFiles::save_file()
+        .identifier(parent)
+        .title(locale.get(Text::SaveAs))
+        .accept_label(locale.get(Text::Save))
+        .current_name("ubrus-report.txt")
+        .send()
+        .await?
         .response()?
         .uris()
         .first()
         .and_then(|uri| uri.to_file_path().ok())
-        .context("Open a local file")
+        .context("Choose a local destination")
+}
+
+pub async fn choose_files(
+    parent: Option<WindowIdentifier>,
+    locale: Locale,
+    cancel: &gtk::gio::Cancellable,
+) -> Result<Vec<PathBuf>> {
+    use gtk::{gio, glib, prelude::*};
+    use iced::futures::future::{Either, select};
+    const BUS: &str = "org.freedesktop.portal.Desktop";
+    const REQUEST: &str = "org.freedesktop.portal.Request";
+    let bus = gio::bus_get_future(gio::BusType::Session).await?;
+    let token = format!("ubrus_{}", glib::uuid_string_random().replace('-', "_"));
+    let sender = bus.unique_name().context("Missing portal connection name")?;
+    let sender = sender.trim_start_matches(':').replace('.', "_");
+    let expected = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+    let (tx, rx) = async_channel::unbounded();
+    // Subscribe before OpenFile: a fast chooser can reply before the method returns.
+    let _subscription = bus.subscribe_to_signal(
+        Some(BUS),
+        Some(REQUEST),
+        Some("Response"),
+        None,
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |s| {
+            let _ = tx.try_send((s.object_path.to_owned(), s.parameters.clone()));
+        },
+    );
+    let options = glib::VariantDict::new(None);
+    options.insert("multiple", true);
+    options.insert("handle_token", token);
+    options.insert("accept_label", locale.get(Text::Open));
+    let types = [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "video/mp4",
+        "video/webm",
+    ]
+    .map(|mime| (1u32, mime))
+    .to_vec();
+    options.insert("filters", vec![(locale.get(Text::Formats), types)]);
+    let parent_id = parent.as_ref().map(ToString::to_string).unwrap_or_default();
+    let args = glib::Variant::tuple_from_iter([
+        parent_id.to_variant(),
+        locale.get(Text::Import).to_variant(),
+        options.end(),
+    ]);
+    let reply = bus
+        .call_future(
+            Some(BUS),
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.FileChooser",
+            "OpenFile",
+            Some(&args),
+            None,
+            gio::DBusCallFlags::NONE,
+            10000,
+        )
+        .await?;
+    let path = reply.child_value(0).str().unwrap_or(&expected).to_owned();
+    let response = async {
+        loop {
+            let (from, value) = rx.recv().await?;
+            if from == path {
+                break Ok::<_, anyhow::Error>(value);
+            }
+        }
+    };
+    let value = match select(Box::pin(response), cancel.future()).await {
+        Either::Left((value, _)) => value?,
+        Either::Right(_) => {
+            let _ = bus
+                .call_future(
+                    Some(BUS),
+                    &path,
+                    REQUEST,
+                    "Close",
+                    None,
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    3000,
+                )
+                .await;
+            return Ok(Vec::new());
+        }
+    };
+    match value.child_get::<u32>(0) {
+        0 => glib::VariantDict::new(Some(&value.child_value(1)))
+            .lookup::<Vec<String>>("uris")?
+            .context("File chooser returned no paths")?
+            .iter()
+            .map(|uri| gio::File::for_uri(uri).path().context("Open a local file"))
+            .collect(),
+        1 => Ok(Vec::new()),
+        _ => anyhow::bail!("File chooser failed"),
+    }
 }
 
 pub async fn wallpaper(parent: Option<WindowIdentifier>, path: &Path) -> Result<()> {

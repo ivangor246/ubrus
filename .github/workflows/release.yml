@@ -1,0 +1,64 @@
+name: GitHub Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+  release:
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Verify the tag and build the packages
+        run: |
+          /usr/bin/python3 packaging/check-release.py --tag "$GITHUB_REF_NAME"
+          make deb
+          bash packaging/github-assets.sh "$GITHUB_REF_NAME"
+      - name: Install the DEB on clean Ubuntu images
+        run: |
+          for ubuntu in 24.04 26.04; do
+            docker run --rm -e DEBIAN_FRONTEND=noninteractive -e "EXPECTED_VERSION=${GITHUB_REF_NAME#v}" \
+              -v "$PWD/dist/github:/release:ro" "ubuntu:$ubuntu" bash -ec '
+                apt-get update -qq
+                apt-get install -y --no-install-recommends /release/ubrus-amd64.deb
+                test "$(/usr/bin/ubrus --version)" = "Ubrus $EXPECTED_VERSION"
+                test -s /usr/share/gnome-shell/extensions/wallpaper@ubrus.org/extension.js
+              '
+          done
+      - name: Publish the verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          assets=(ubrus-amd64.deb ubrus-linux-amd64.tar.gz ubrus-extension.zip SHA256SUMS)
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft); then
+            if [[ "$draft" == false ]]; then
+              checked=$(mktemp -d)
+              for asset in "${assets[@]}"; do
+                gh release download "$tag" --pattern "$asset" --dir "$checked"
+              done
+              (cd "$checked" && sha256sum --strict --check SHA256SUMS)
+              exit 0
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --generate-notes
+          fi
+          (cd dist/github && gh release upload "$tag" --clobber "${assets[@]}")
+          gh release edit "$tag" --draft=false
+
+  snap:
+    needs: release
+    if: vars.SNAP_STORE_ENABLED == 'true'
+    uses: ./.github/workflows/snap.yml
+    with:
+      channel: candidate

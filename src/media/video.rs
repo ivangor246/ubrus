@@ -1,9 +1,12 @@
-use super::{VideoPipeline, gif::Gif};
+use super::{
+    VideoPipeline,
+    gif::{Frames, Gif},
+};
 use anyhow::{Context, Result};
 use gst::prelude::*;
 use gtk::{gdk, glib};
 use std::{
-    cell::Cell,
+    cell::{Cell, OnceCell},
     path::Path,
     rc::Rc,
     sync::{
@@ -11,6 +14,11 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+
+pub enum VideoEvent {
+    Ready,
+    StateChanged,
+}
 
 struct GstVideo {
     pipeline: VideoPipeline,
@@ -27,10 +35,11 @@ struct GstVideo {
 struct Playback {
     active: Cell<bool>,
     at_end: Cell<bool>,
+    last_stable_state: Cell<Option<gst::State>>,
 }
 
 impl GstVideo {
-    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
+    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<VideoEvent>) + 'static) -> Result<Self> {
         let sink = gst::ElementFactory::make("gtk4paintablesink").build()?;
         let paintable = sink.property::<gdk::Paintable>("paintable");
         let output = if paintable.property::<Option<gdk::GLContext>>("gl-context").is_some() {
@@ -84,10 +93,20 @@ impl GstVideo {
                         gst::MessageView::AsyncDone(_) if !ready => {
                             ready = true;
                             notice(if speed == 100 {
-                                Ok(())
+                                Ok(VideoEvent::Ready)
                             } else {
-                                super::seek_start(&p, speed)
+                                super::seek_start(&p, speed).map(|()| VideoEvent::Ready)
                             });
+                        }
+                        gst::MessageView::StateChanged(change)
+                            if ready
+                                && msg.src() == Some(p.upcast_ref::<gst::Object>())
+                                && change.pending() == gst::State::VoidPending
+                                && matches!(change.current(), gst::State::Paused | gst::State::Playing)
+                                && requested.last_stable_state.get() != Some(change.current()) =>
+                        {
+                            requested.last_stable_state.set(Some(change.current()));
+                            notice(Ok(VideoEvent::StateChanged));
                         }
                         gst::MessageView::Error(e) => notice(Err(anyhow::anyhow!("{}", e.error()))),
                         _ => {}
@@ -120,6 +139,8 @@ impl GstVideo {
         } else {
             gst::State::Paused
         })?;
+        // A rapid play/pause can settle back in the same state as the previous request.
+        self.playback.last_stable_state.set(None);
         self.playback.active.set(active);
         Ok(())
     }
@@ -134,23 +155,41 @@ impl GstVideo {
             "dropped":s.get::<u64>("dropped").unwrap_or(0)})
     }
 }
+struct AnimatedImage {
+    loaded: Rc<OnceCell<Rc<Gif>>>,
+    load: glib::JoinHandle<()>,
+}
+impl Drop for AnimatedImage {
+    fn drop(&mut self) {
+        self.load.abort();
+    }
+}
 enum Backend {
     Stream(GstVideo),
-    Gif(Rc<Gif>),
+    Gif(AnimatedImage),
 }
 pub struct Video {
     pub paintable: gdk::Paintable,
     backend: Backend,
 }
 impl Video {
-    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<()>) + 'static) -> Result<Self> {
+    pub fn new(path: &Path, speed: u16, notice: impl Fn(Result<VideoEvent>) + 'static) -> Result<Self> {
         if path.extension().is_some_and(|ext| ext == "gif" || ext == "webp") {
-            let gif = Gif::open(path, speed)?;
-            let paintable = gif.frames.clone().upcast();
-            glib::idle_add_local_once(move || notice(Ok(())));
+            let frames: Frames = glib::Object::new();
+            let paintable = frames.clone().upcast();
+            let path = path.to_owned();
+            let loaded = Rc::new(OnceCell::new());
+            let receiver = loaded.clone();
+            let load = glib::spawn_future_local(async move {
+                let result = Gif::load(&path, speed, frames).await.map(|gif| {
+                    let _ = receiver.set(gif);
+                    VideoEvent::Ready
+                });
+                notice(result);
+            });
             Ok(Self {
                 paintable,
-                backend: Backend::Gif(gif),
+                backend: Backend::Gif(AnimatedImage { loaded, load }),
             })
         } else {
             let stream = GstVideo::new(path, speed, notice)?;
@@ -164,7 +203,9 @@ impl Video {
         match &self.backend {
             Backend::Stream(stream) => stream.play(active),
             Backend::Gif(gif) => {
-                gif.play(active);
+                if let Some(gif) = gif.loaded.get() {
+                    gif.play(active);
+                }
                 Ok(())
             }
         }
@@ -172,8 +213,11 @@ impl Video {
     pub fn stats(&self) -> serde_json::Value {
         match &self.backend {
             Backend::Stream(stream) => stream.stats(),
-            Backend::Gif(g) => {
-                serde_json::json!({"decoder":"GdkPixbuf GIF/WebP","playing":g.is_playing(),"paused":!g.is_playing(),"decoded":g.decoded.get(),"rendered":g.decoded.get(),"dropped":0})
+            Backend::Gif(image) => {
+                let loaded = image.loaded.get();
+                let playing = loaded.is_some_and(|gif| gif.is_playing());
+                let frames = loaded.map_or(0, |gif| gif.decoded.get());
+                serde_json::json!({"decoder":"GdkPixbuf GIF/WebP","playing":playing,"paused":loaded.is_some() && !playing,"decoded":frames,"rendered":frames,"dropped":null})
             }
         }
     }

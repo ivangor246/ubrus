@@ -46,8 +46,11 @@ def seed_library(session: DesktopSession) -> None:
     if os.getenv('UBRUS_TEST_COMPONENT') == 'controller':
         shutil.copyfile(MEDIA_DIR / 'loop.webm', clip)
     else:
+        # A benchmark interval spans a single segment so a flushing loop cannot reset sink statistics.
+        active_seconds = int(os.getenv('UBRUS_BENCH_ACTIVE_SECONDS', '0'))
+        frames = (active_seconds + 10) * 30 if active_seconds else 90
         create_media(
-            'videotestsrc num-buffers=90 pattern=smpte horizontal-speed=17 ! '
+            f'videotestsrc num-buffers={frames} pattern=smpte horizontal-speed=17 ! '
             'video/x-raw,width=1920,height=1080,framerate=30/1 ! vp8enc threads=1 deadline=1 ! webmmux',
             clip,
         )
@@ -126,16 +129,20 @@ def reopen_settings(session: DesktopSession, controller: subprocess.Popen) -> No
 
 
 def check_wayland_import(session: DesktopSession) -> None:
-    session.selection.write_text(str(MEDIA_DIR / 'landscape.png'), encoding='utf-8')
+    files = [MEDIA_DIR / 'landscape.png', MEDIA_DIR / 'single.gif']
+    selection = session.selection.with_suffix('.json')
+    selection.write_text(json.dumps([str(path) for path in files]), encoding='utf-8')
+    expected = {hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
     session.probe('Import')
     wait_for(
-        'PNG import',
-        lambda: any(item['ext'] == 'png' for item in session.profile()['items'].values()),
+        'both selected files to be imported',
+        lambda: expected.issubset(session.profile()['items']),
     )
     assert (
         session.selection.with_suffix('.parent').read_text(encoding='utf-8').startswith('wayland:')
     )
-    session.log('imported through the file chooser parented to the Iced window')
+    selection.unlink()
+    session.log('imported two files through the file chooser parented to the Iced window')
 
 
 def check_extension_restart(session: DesktopSession) -> None:
@@ -155,6 +162,16 @@ def check_extension_restart(session: DesktopSession) -> None:
 
 
 def run(session: DesktopSession) -> None:
+    if os.getenv('UBRUS_TEST_COMPONENT') == 'library':
+        from scenarios.benchmarks import library
+        start_shell(session)
+        library(session)
+        return
+    if os.getenv('UBRUS_TEST_COMPONENT') in ('gif', 'webp'):
+        from scenarios.benchmarks import animation
+        start_shell(session)
+        animation(session, os.environ['UBRUS_TEST_COMPONENT'], start_controller)
+        return
     if os.getenv('UBRUS_TEST_COMPONENT') == 'update':
         from scenarios.update import check_update
         check_update(session, start_shell)

@@ -13,6 +13,16 @@
     Приостанавливайте анимацию и восстанавливайте выбор при входе в GNOME.</p>
   </description>
   <url type="homepage">https://github.com/ivangor246/ubrus</url>
+  <url type="bugtracker">https://github.com/ivangor246/ubrus/issues</url>
+  <url type="help">https://github.com/ivangor246/ubrus#install-on-ubuntu</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Wallpaper library and monitor adjustments</caption>
+      <caption xml:lang="ru">Библиотека обоев и настройки монитора</caption>
+      <image type="source" width="1000" height="650">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-en.png</image>
+      <image type="source" width="1000" height="650" xml:lang="ru">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-ru.png</image>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">org.ubrus.Ubrus.desktop</launchable>
   <provides><binary>ubrus</binary></provides>
   <developer id="org.ubrus"><name>Ubrus contributors</name></developer>

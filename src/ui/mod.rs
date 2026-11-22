@@ -1,6 +1,7 @@
 mod artwork;
 mod displays;
 mod focus;
+mod gallery;
 mod preview;
 mod report;
 mod runtime;
@@ -9,7 +10,7 @@ mod view;
 pub use runtime::run;
 
 use crate::{
-    app::{Action, Command, Event, Preference, Snapshot, control::BUS},
+    app::{Action, Command, Event, Feedback, Preference, Snapshot, control::BUS},
     desktop::portal,
     library::{ALL, Choice},
     preferences::Text,
@@ -37,6 +38,13 @@ enum Message {
     Frame(u64, Option<preview::Frame>),
     Set(Preference),
     Import,
+    CancelImport,
+    Search(String),
+    Thumbnails(u64, Vec<(String, Option<image::Handle>)>),
+    Unfocused(window::Id),
+    Minimized(u64, Option<bool>),
+    CopyPublicReport,
+    CopyExtensionCommand,
     Apply,
     Visible(bool),
     Enabled(bool),
@@ -53,7 +61,8 @@ enum Message {
     Drag(bool),
     Move(iced::Point, f64, f64),
     Nudge(i16, i16),
-    Scrolled(iced::widget::operation::AbsoluteOffset),
+    Scrolled(iced::widget::operation::AbsoluteOffset, f32),
+    GalleryPage(bool),
     Restart,
     CheckUpdates,
     RequestDelete,
@@ -80,6 +89,13 @@ struct Ui {
     selected: Option<String>,
     delete_confirmation: Option<String>,
     library_order: Vec<String>,
+    search: String,
+    matching: Vec<String>,
+    loading_thumbnails: bool,
+    library_revision: u64,
+    focused: bool,
+    importing: bool,
+    import_cancel_requested: bool,
     thumbnails: std::collections::BTreeMap<String, image::Handle>,
     fit: bool,
     framing: crate::framing::Framing,
@@ -89,13 +105,14 @@ struct Ui {
     editing: bool,
     more: bool,
     offset: iced::widget::operation::AbsoluteOffset,
+    gallery_height: Option<f32>,
     drag: Option<(iced::Point, crate::framing::Framing)>,
     pointer: iced::Point,
     poster: Option<image::Handle>,
     adjusted: Option<image::Handle>,
     update_available: bool,
     shell_update: bool,
-    feedback: Option<Text>,
+    feedback: Option<Feedback>,
     report: report::ReportView,
     saved_report: Option<std::path::PathBuf>,
     busy: bool,
@@ -140,21 +157,73 @@ impl Ui {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    fn sync_thumbnails(&mut self) {
-        self.thumbnails.retain(|id, _| self.data.profile.items.contains_key(id));
-        for id in &self.library_order {
-            self.thumbnails.entry(id.clone()).or_insert_with(|| {
-                // The service can unlink a deleted item before an outstanding UI frame is drawn.
-                // Own validated PNG bytes until every widget using the thumbnail has gone away.
-                std::fs::read(self.data.store.thumb(id))
-                    .ok()
-                    .and_then(|bytes| {
-                        ::image::load_from_memory_with_format(&bytes, ::image::ImageFormat::Png).ok()?;
-                        Some(image::Handle::from_bytes(bytes))
-                    })
-                    .unwrap_or_else(artwork::brand)
-            });
+    fn gallery_page(&self) -> gallery::Page {
+        let width = self.size.width;
+        let editor = if width >= 840. && self.selected.is_some() {
+            (width * 0.39).clamp(352., 540.) + 31.
+        } else {
+            0.
+        };
+        gallery::page(
+            (width - 40. - editor).max(1.),
+            self.size.height,
+            self.offset.y,
+            self.matching.len(),
+        )
+    }
+
+    fn sync_thumbnails(&mut self) -> Task<Message> {
+        if self.window.is_none() || self.tab != Tab::Library {
+            self.thumbnails.clear();
+            return Task::none();
         }
+        let page = self.gallery_page();
+        let visible = if self.editing && self.size.width < 840. {
+            &[][..]
+        } else {
+            &self.matching[page.first..page.end]
+        };
+        // Retain the visible rows, a row on either side, and the selected poster.
+        let wanted: std::collections::BTreeSet<_> = self.selected.iter().chain(visible.iter()).collect();
+        self.thumbnails.retain(|id, _| wanted.contains(id));
+        if self.loading_thumbnails {
+            return Task::none();
+        }
+        let mut missing = Vec::new();
+        for id in self.selected.iter().chain(visible.iter()) {
+            if !self.thumbnails.contains_key(id) && !missing.contains(id) {
+                missing.push(id.clone());
+                if missing.len() == 8 {
+                    break;
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Task::none();
+        }
+        self.loading_thumbnails = true;
+        let revision = self.library_revision;
+        let requested = missing.clone();
+        let store = self.data.store.clone();
+        Task::perform(
+            gtk::gio::spawn_blocking(move || {
+                missing
+                    .into_iter()
+                    .map(|id| {
+                        let image = gallery::thumbnail(&store, &id);
+                        (id, image)
+                    })
+                    .collect()
+            }),
+            move |result| {
+                let images = result.unwrap_or_else(|_| requested.iter().map(|id| (id.clone(), None)).collect());
+                Message::Thumbnails(revision, images)
+            },
+        )
+    }
+
+    fn filter_gallery(&mut self) {
+        self.matching = gallery::matches(&self.data.profile, &self.library_order, &self.search);
     }
 
     fn load_choice(&mut self) {
@@ -169,14 +238,7 @@ impl Ui {
         self.framing = choice.map(|c| c.frame).unwrap_or_default();
         self.drag = None;
         self.more = false;
-        self.poster = self.selected.as_ref().and_then(|id| {
-            let pixels = ::image::open(self.data.store.thumb(id)).ok()?.into_rgba8();
-            Some(image::Handle::from_rgba(
-                pixels.width(),
-                pixels.height(),
-                pixels.into_raw(),
-            ))
-        });
+        self.poster = self.selected.as_ref().and_then(|id| self.thumbnails.get(id)).cloned();
         self.refresh_picture();
     }
 
@@ -233,6 +295,7 @@ impl Ui {
         let Some(id) = self.window else { return Task::none() };
         if self.busy {
             self.closing = true;
+            self.cancel_import();
             // Portals need a live, visible parent until the interaction finishes.
             return Task::none();
         }
@@ -243,6 +306,13 @@ impl Ui {
         window::close(id)
     }
 
+    fn cancel_import(&mut self) {
+        if self.importing && !self.import_cancel_requested {
+            self.import_cancel_requested = true;
+            let _ = self.commands.try_send(Command::CancelImport);
+        }
+    }
+
     fn action(&mut self, action: Action) -> Task<Message> {
         let Some(id) = self.window else { return Task::none() };
         let fallback = action.failure_message();
@@ -250,6 +320,8 @@ impl Ui {
             return Task::none();
         }
         self.busy = true;
+        self.importing = matches!(action, Action::Import);
+        self.import_cancel_requested = false;
         self.delete_confirmation = None;
         self.feedback = None;
         let commands = self.commands.clone();
@@ -322,20 +394,52 @@ impl Ui {
         self.screen == ALL || self.data.status.outputs.iter().any(|m| m.id == self.screen)
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        let gallery_changed = matches!(
+            &message,
+            Message::Thumbnails(..)
+                | Message::Event(_)
+                | Message::Search(_)
+                | Message::Select(_)
+                | Message::Tab(_)
+                | Message::Resize(_)
+                | Message::Scrolled(..)
+                | Message::GalleryPage(_)
+                | Message::Back
+                | Message::Close(_)
+        );
+        let task = self.handle(message);
+        if gallery_changed {
+            Task::batch([task, self.sync_thumbnails()])
+        } else {
+            task
+        }
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SystemAppearance(value) => self.system_appearance = value,
             Message::Event(event) => match *event {
                 Event::Open(data) => {
+                    self.library_revision = self.library_revision.wrapping_add(1);
                     self.library_order = data.profile.sorted_ids();
                     self.data = data;
-                    self.sync_thumbnails();
+                    self.filter_gallery();
+                    self.check_updates();
                     return self.open();
                 }
                 Event::Updates => self.check_updates(),
                 Event::Shutdown => return iced::exit(),
                 Event::Status(status) => {
+                    if self.playback.is_some()
+                        && (status.preview_visible == Some(false)
+                            || (status.preview_visible.is_none() && !self.focused))
+                    {
+                        self.stop();
+                    }
+                    let extension_changed = self.data.status.connected != status.connected
+                        || self.data.status.extension_build != status.extension_build;
                     self.data.status = status;
-                    if self.tab == Tab::Preferences {
+                    if extension_changed {
                         self.check_updates();
                     }
                     if self.tab == Tab::Diagnostics && self.report.content.cursor().selection.is_none() {
@@ -356,6 +460,10 @@ impl Ui {
                 } => {
                     let library_changed = profile.items.len() != self.library_order.len() || selected.is_some();
                     if library_changed {
+                        self.library_revision = self.library_revision.wrapping_add(1);
+                        if let Some(id) = &selected {
+                            self.thumbnails.remove(id);
+                        }
                         self.library_order = profile.sorted_ids();
                     }
                     let removed = self.selected.as_ref().is_some_and(|id| !profile.items.contains_key(id));
@@ -364,8 +472,8 @@ impl Ui {
                         self.selected = self.library_order.first().cloned();
                     }
                     self.data.profile = profile;
-                    if library_changed && self.window.is_some() {
-                        self.sync_thumbnails();
+                    if library_changed {
+                        self.filter_gallery();
                     }
                     self.feedback = feedback;
                     if let Some(id) = selected {
@@ -380,12 +488,53 @@ impl Ui {
                     if !from_panel {
                         self.progress = None;
                         self.busy = false;
+                        self.importing = false;
                     }
                     if !self.busy && self.closing {
                         return self.close();
                     }
                 }
             },
+            Message::Thumbnails(revision, images) => {
+                self.loading_thumbnails = false;
+                if revision != self.library_revision {
+                    return Task::none();
+                }
+                for (id, image) in images {
+                    if self.window.is_none() || self.tab != Tab::Library || !self.data.profile.items.contains_key(&id) {
+                        continue;
+                    }
+                    let handle = image.unwrap_or_else(artwork::brand);
+                    if self.selected.as_ref() == Some(&id) {
+                        self.poster = Some(handle.clone());
+                        self.refresh_picture();
+                    }
+                    self.thumbnails.insert(id, handle);
+                }
+            }
+            Message::Search(search) => {
+                self.search = search;
+                self.filter_gallery();
+                self.offset = Default::default();
+                return iced::widget::operation::scroll_to("library", self.offset);
+            }
+            Message::Unfocused(id) => {
+                self.focused = false;
+                if self.playback.is_none() {
+                    return Task::none();
+                }
+                let generation = self.generation;
+                return window::is_minimized(id).map(move |value| Message::Minimized(generation, value));
+            }
+            Message::Minimized(generation, value)
+                if generation == self.generation && self.playback.is_some() && !self.focused =>
+            {
+                // Wayland does not expose minimization through winit. Shell supplies visibility when online.
+                if value == Some(true) || self.data.status.preview_visible.is_none() {
+                    self.stop();
+                }
+            }
+            Message::CancelImport => self.cancel_import(),
             Message::Tab(tab) => {
                 self.delete_confirmation = None;
                 self.stop();
@@ -432,13 +581,14 @@ impl Ui {
                 }
                 Some(Err(e)) => {
                     self.stop();
-                    self.feedback = Some(Text::FailedPreview);
+                    self.feedback = Some(Feedback::Message(Text::FailedPreview));
                     let _ = self.commands.try_send(Command::Error(e));
                 }
                 None => self.stop(),
             },
             Message::Import => return self.action(Action::Import),
             Message::RequestDelete if self.tab == Tab::Library && !self.busy && self.data.writable => {
+                self.stop();
                 self.delete_confirmation.clone_from(&self.selected);
             }
             Message::AcceptDelete if let Some(id) = self.delete_confirmation.clone() => {
@@ -453,15 +603,22 @@ impl Ui {
             }
             Message::Visible(v) => return self.action(Action::Visible(v)),
             Message::Enabled(v) => return self.action(Action::Enabled(v)),
-            Message::Resize(size) => self.size = size,
+            Message::Resize(size) => {
+                self.size = size;
+                if size.width < 840. && !self.editing && self.playback.is_some() {
+                    self.stop();
+                }
+            }
             Message::DisplaySize(size) => self.display_size = size,
             Message::PreviewMonitor(m) => self.preview_monitor = m.id,
             Message::Focus(back) => {
-                return if back {
+                let focus = if back {
                     iced::widget::operation::focus_previous()
                 } else {
                     iced::widget::operation::focus_next()
                 };
+                // A widget operation updates the focus tree without requesting a redraw.
+                return focus.chain(Task::done(Message::Idle));
             }
             Message::More => self.more = !self.more,
             Message::Back if self.delete_confirmation.is_some() => self.delete_confirmation = None,
@@ -472,7 +629,38 @@ impl Ui {
                 self.tab = Tab::Library;
                 return iced::widget::operation::scroll_to("library", self.offset);
             }
-            Message::Scrolled(offset) => self.offset = offset,
+            Message::Scrolled(offset, height) => {
+                self.offset = offset;
+                self.gallery_height = Some(height);
+            }
+            Message::GalleryPage(forward)
+                if self.tab == Tab::Library
+                    && self.delete_confirmation.is_none()
+                    && (!self.editing || self.size.width >= 840.) =>
+            {
+                let columns = self.gallery_page().columns;
+                if let Some((offset, first)) = gallery::keyboard_page(
+                    columns,
+                    self.matching.len(),
+                    self.gallery_height.unwrap_or(self.size.height),
+                    self.offset.y,
+                    forward,
+                ) {
+                    if (offset - self.offset.y).abs() < f32::EPSILON {
+                        return Task::none();
+                    }
+                    let id = self.matching[first].clone();
+                    self.offset.y = offset;
+                    if self.selected.as_ref() != Some(&id) {
+                        self.stop();
+                        self.selected = Some(id.clone());
+                        self.load_choice();
+                        self.feedback = None;
+                    }
+                    return iced::widget::operation::scroll_to("library", self.offset)
+                        .chain(iced::widget::operation::focus(id));
+                }
+            }
             Message::Zoom(v) => self.framing.zoom = v,
             Message::Brightness(v) => {
                 self.framing.brightness = v;
@@ -513,12 +701,24 @@ impl Ui {
                 self.framing.x = (self.framing.x as i16 + x).clamp(0, 100) as u16;
                 self.framing.y = (self.framing.y as i16 + y).clamp(0, 100) as u16;
             }
-            Message::CheckUpdates => self.check_updates(),
+            Message::CheckUpdates => {
+                self.focused = true;
+                self.check_updates();
+            }
             Message::Restart if !self.busy && self.update_available => {
                 let _ = self.commands.try_send(Command::Restart);
             }
-            Message::Apply if self.available() && !self.data.profile.disabled => {
+            Message::Apply
+                if self.available()
+                    && !self.data.profile.disabled
+                    && self.tab == Tab::Library
+                    && self.delete_confirmation.is_none() =>
+            {
                 if let Some(id) = &self.selected {
+                    if !self.data.status.connected && (self.screen != ALL || self.data.profile.items[id].animated()) {
+                        self.feedback = Some(Feedback::Message(Text::Extension));
+                        return Task::none();
+                    }
                     return self.action(Action::Apply(
                         self.screen.clone(),
                         Choice {
@@ -531,16 +731,32 @@ impl Ui {
             }
             Message::ReportInteraction(action) => self.report.interact(action),
             Message::CopyReport => return iced::clipboard::write(self.report.content.text()),
+            Message::CopyPublicReport => {
+                self.feedback = Some(Feedback::Message(Text::PublicReportCopied));
+                return iced::clipboard::write(crate::app::diagnostics::public_report(
+                    &self.data.profile,
+                    &self.data.status,
+                ));
+            }
+            Message::CopyExtensionCommand => {
+                self.feedback = Some(Feedback::Message(Text::CommandCopied));
+                return iced::clipboard::write(self.extension_command().to_string());
+            }
             Message::Export => return self.action(Action::Export),
             Message::ExportAs => return self.action(Action::ExportAs),
             Message::Inspect => {
                 let _ = self.commands.try_send(Command::Inspect);
             }
             Message::Close(id) if Some(id) == self.window => return self.close(),
+            Message::Dispatch(Ok(()), _) if self.importing && self.import_cancel_requested => {
+                // Parent handle creation can complete after an immediate cancel or close.
+                let _ = self.commands.try_send(Command::CancelImport);
+            }
             Message::Dispatch(Err(e), fallback) => {
                 let _ = self.commands.try_send(Command::Error(e));
-                self.feedback = Some(fallback);
+                self.feedback = Some(Feedback::Message(fallback));
                 self.busy = false;
+                self.importing = false;
                 if self.closing {
                     return self.close();
                 }

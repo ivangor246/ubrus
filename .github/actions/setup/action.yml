@@ -1,0 +1,12 @@
+name: Ubrus build dependencies
+description: Install the native dependencies for the Ubuntu 24.04 build and tests
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential pkg-config libgtk-4-dev libgstreamer-plugins-base1.0-dev libdrm-dev libx11-dev \
+          gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-gl librsvg2-common webp-pixbuf-loader \
+          python3-yaml unzip desktop-file-utils appstream gjs

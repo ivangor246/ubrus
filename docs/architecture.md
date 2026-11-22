@@ -21,8 +21,12 @@ Workspace cards clone the renderer surface directly during playback. They scale 
 
 ## Persistent data
 
-The library lives under `$XDG_DATA_HOME/ubrus` (usually `~/.local/share/ubrus`) or `$SNAP_USER_COMMON`. Imports are hashed and decoded before publication. The controller writes the profile and its static fallbacks in one atomic rename. A damaged profile opens read-only.
+The library lives under `$XDG_DATA_HOME/ubrus` (usually `~/.local/share/ubrus`) or `$SNAP_USER_COMMON`. One login session holds the library's writer lock during recovery and editing. A second session can inspect the saved library. Damaged profiles and profiles from newer versions open read-only.
+
+Imports copy, hash and prepare a thumbnail in a worker. Each file in a multi-file selection commits separately. Cancellation keeps files already committed. Before publishing new media or thumbnails, the controller records their paths in `import-change.json`. Recovery can then remove interrupted imports without touching media from an older or missing profile. The gallery decodes thumbnails for the visible rows and the selected editor item on demand.
+
+The controller writes the profile and its static fallbacks in one atomic rename. For global stills it stages the profile before contacting the wallpaper portal. The native controller journals the change in `wallpaper-change.json` and checks the installed image before restoring either GNOME theme's background. A strict Snap without its companion extension can apply a still through the portal, but the portal gives it no way to identify or restore the previous host image after a crash.
 
 Deleting a library item first commits its removal and affected assignments. The controller then unlinks the managed media and thumbnail. Pending deletions survive a restart.
 
-If the controller disappears during a change, Shell reads the last committed fallback from the profile. It keeps a cache in `$XDG_DATA_HOME/ubrus-shell` for older or unreadable profiles. The activity log retains two files of up to 512 KiB each.
+If the controller disappears during a change, Shell first displays its cached posters, then asynchronously reads the last committed fallback from the profile. Under `$XDG_DATA_HOME/ubrus-shell` it also remembers which connector distinguished two displays with the same hardware serial. The activity log retains two files of up to 512 KiB each. The full diagnostic report includes local details. The public report constructs its text from an allowlist of application and playback fields.

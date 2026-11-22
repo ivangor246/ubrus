@@ -4,11 +4,16 @@ version: '0.2.0'
 summary: Choose still and animated wallpapers for each monitor
 description: |
   Import local images, videos and GIFs, preview them and set your GNOME desktop
-  background. For animated or per-monitor wallpapers install and enable the
-  companion GNOME Shell extension following the instructions in Diagnostics.
+  background. Supports Ubuntu 24.04 and 26.04 on amd64 with GNOME Shell 46 or
+  50. For animation or separate monitor backgrounds, install the companion
+  extension from the bundled ZIP, sign out and back in, then enable Ubrus.
+  The app's Diagnostics screen includes the installation command.
 grade: stable
 confinement: strict
 license: MIT OR Apache-2.0
+website: https://github.com/ivangor246/ubrus
+issues: https://github.com/ivangor246/ubrus/issues
+contact: https://github.com/ivangor246/ubrus/issues
 platforms:
   amd64:
 apps:
