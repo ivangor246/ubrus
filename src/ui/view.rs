@@ -1,4 +1,4 @@
-use super::{Message, Tab, Ui, artwork, displays::monitors, focus};
+use super::{Message, Tab, Ui, artwork, displays::monitors, focus, style};
 use crate::{
     app::Preference,
     library::ALL,
@@ -20,22 +20,19 @@ impl Ui {
         match self.data.profile.theme {
             Appearance::Dark => true,
             Appearance::Light => false,
-            Appearance::System => self.system_dark.unwrap_or(false),
+            Appearance::System => self.system_appearance.dark,
         }
     }
 
     fn command<'a>(&self, label: Text, icon: &'static str, action: Option<Message>) -> View<'a> {
         let locale = self.data.profile.language.locale();
         let b = button(
-            row![
-                image(artwork::icon(icon, self.dark())).width(18).height(18),
-                text(locale.get(label)).size(14)
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+            row![artwork::symbol(icon, 18.), text(locale.get(label)).size(14)]
+                .spacing(8)
+                .align_y(Alignment::Center),
         )
         .padding([8, 12])
-        .style(button::subtle)
+        .style(style::subtle)
         .on_press_maybe(action.clone());
         focus::action(b, action)
     }
@@ -59,13 +56,13 @@ impl Ui {
                 row![
                     focus::action(
                         button(locale.get(Text::Cancel))
-                            .style(button::secondary)
+                            .style(style::subtle)
                             .on_press(cancel.clone()),
                         Some(cancel)
                     ),
                     focus::action(
                         button(locale.get(Text::Delete))
-                            .style(button::danger)
+                            .style(style::danger)
                             .on_press(delete.clone()),
                         Some(delete)
                     )
@@ -82,24 +79,28 @@ impl Ui {
             .center(Fill)
             .into();
         }
-        let (symbol, label, color): (&str, Text, fn(&Theme) -> text::Style) = if p.disabled {
-            ("○", Text::Disabled, text::secondary)
+        let (symbol, label, color): (&str, Text, fn(&Theme) -> Color) = if p.disabled {
+            ("○", Text::Disabled, style::muted)
         } else if !p.visible() || p.screens.is_empty() {
-            ("–", Text::Hidden, text::secondary)
+            ("–", Text::Hidden, style::muted)
         } else if p.paused && p.has_animation() {
-            ("Ⅱ", Text::Paused, text::warning)
+            ("Ⅱ", Text::Paused, |theme| theme.palette().warning)
         } else {
-            ("●", Text::Running, text::success)
+            ("●", Text::Running, |theme| theme.palette().success)
         };
         let mut header = row![
-            image(artwork::icon("brand", false)).width(36).height(36),
+            image(artwork::brand()).width(36).height(36),
             text("Ubrus")
                 .font(iced::Font {
                     weight: iced::font::Weight::Semibold,
                     ..Default::default()
                 })
                 .size(25),
-            text(format!("{symbol} {}", locale.get(label))).size(13).style(color),
+            text(format!("{symbol} {}", locale.get(label)))
+                .size(14)
+                .style(move |theme| text::Style {
+                    color: Some(color(theme))
+                }),
             space::horizontal()
         ]
         .spacing(9)
@@ -135,10 +136,18 @@ impl Ui {
         column![
             text(t(Text::Diagnostics)).size(23),
             row![
-                button(t(Text::Refresh)).on_press(Message::Inspect),
-                button(t(Text::CopyAll)).on_press(Message::CopyReport),
-                button(t(Text::Export)).on_press_maybe((!self.busy).then_some(Message::Export)),
-                button(t(Text::SaveAs)).on_press_maybe((!self.busy).then_some(Message::ExportAs))
+                button(t(Text::Refresh))
+                    .style(style::primary)
+                    .on_press(Message::Inspect),
+                button(t(Text::CopyAll))
+                    .style(style::primary)
+                    .on_press(Message::CopyReport),
+                button(t(Text::Export))
+                    .style(style::primary)
+                    .on_press_maybe((!self.busy).then_some(Message::Export)),
+                button(t(Text::SaveAs))
+                    .style(style::primary)
+                    .on_press_maybe((!self.busy).then_some(Message::ExportAs))
             ]
             .spacing(8)
             .wrap(),
@@ -241,7 +250,7 @@ impl Ui {
         if self.library_order.is_empty() {
             return container(
                 column![
-                    image(artwork::icon("brand", false)).width(84).height(84),
+                    image(artwork::brand()).width(84).height(84),
                     text(l.get(Text::Empty)).size(24),
                     import
                 ]
@@ -261,21 +270,16 @@ impl Ui {
             let item = &p.items[id];
             let mut caption = row![filename(&item.name, 14, 21)].spacing(4);
             if p.visible() && p.screens.values().any(|c| &c.id == id) {
-                caption = caption.push(image(artwork::icon("check", self.dark())).width(16).height(16));
+                caption = caption.push(artwork::symbol("check", 16.));
             }
             let tile = column![
                 iced::widget::stack![
                     space().width(Fill).height(Fill),
-                    image(
-                        self.thumbnails
-                            .get(id)
-                            .cloned()
-                            .unwrap_or_else(|| artwork::icon("brand", false))
-                    )
-                    .content_fit(ContentFit::Cover)
-                    .width(Fill)
-                    .height(Fill)
-                    .border_radius(6)
+                    image(self.thumbnails.get(id).cloned().unwrap_or_else(artwork::brand))
+                        .content_fit(ContentFit::Cover)
+                        .width(Fill)
+                        .height(Fill)
+                        .border_radius(6)
                 ]
                 .clip(true),
                 caption
@@ -290,7 +294,7 @@ impl Ui {
                     .height(Fill)
                     .clip(true)
                     .style(move |theme, status| {
-                        let mut s = button::subtle(theme, status);
+                        let mut s = style::subtle(theme, status);
                         s.border = iced::Border::default()
                             .rounded(10)
                             .width(if selected { 2 } else { 1 })
@@ -390,7 +394,7 @@ impl Ui {
             focus::cycle(
                 column![
                     row![text(label).size(14), space::horizontal(), text(value).size(14)],
-                    slider(range, current, set).step(step)
+                    slider(range, current, set).style(style::slider_rail).step(step)
                 ]
                 .spacing(3),
                 Some(forward),
@@ -448,7 +452,10 @@ impl Ui {
             {
                 let press = (edit && !self.data.profile.disabled && self.available()).then_some(Message::Apply);
                 focus::action(
-                    button(t(Text::Apply)).padding([9, 18]).on_press_maybe(press.clone()),
+                    button(t(Text::Apply))
+                        .style(style::primary)
+                        .padding([9, 18])
+                        .on_press_maybe(press.clone()),
                     press,
                 )
             }
@@ -547,7 +554,7 @@ fn labeled_picker<'a, T: Copy + PartialEq + 'a, const N: usize>(
         set(items.iter().find(|(_, n)| *n == name).unwrap().0)
     });
     focus::cycle(
-        widget,
+        widget.style(style::picker),
         Some(set(items[(index + 1) % N].0)),
         Some(set(items[(index + N - 1) % N].0)),
     )
@@ -555,7 +562,10 @@ fn labeled_picker<'a, T: Copy + PartialEq + 'a, const N: usize>(
 
 fn toggle(value: bool, label: &'static str, enabled: bool, set: fn(bool) -> Message) -> View<'static> {
     focus::action(
-        checkbox(value).label(label).on_toggle_maybe(enabled.then_some(set)),
+        checkbox(value)
+            .style(style::check_box)
+            .label(label)
+            .on_toggle_maybe(enabled.then_some(set)),
         enabled.then(|| set(!value)),
     )
 }
@@ -591,7 +601,7 @@ fn display_picker<'a>(
     let next = set(options[(index + 1) % options.len()].clone());
     let previous = set(options[(index + options.len() - 1) % options.len()].clone());
     focus::cycle(
-        pick_list(options, Some(selected), set).width(Fill),
+        pick_list(options, Some(selected), set).style(style::picker).width(Fill),
         Some(next),
         Some(previous),
     )

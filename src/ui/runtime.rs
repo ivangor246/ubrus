@@ -6,7 +6,7 @@ use crate::{
     preferences::Text,
 };
 use async_channel::{Receiver, Sender};
-use iced::{Subscription, Task, Theme, keyboard, window};
+use iced::{Subscription, Task, keyboard, window};
 
 // UI futures wait on channels and portals. Decoding and file I/O have separate workers.
 struct UiExecutor(iced::futures::executor::ThreadPool);
@@ -38,7 +38,7 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
                 .or_else(|| library_order.first().cloned());
             let mut ui = Ui {
                 data: initial.clone(),
-                system_dark: None,
+                system_appearance: Default::default(),
                 commands: commands.clone(),
                 window: None,
                 tab: Tab::Library,
@@ -81,34 +81,11 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
     )
     .executor::<UiExecutor>()
     .title("Ubrus")
-    .theme(|ui: &Ui, _| {
-        let dark = ui.dark();
-        let mut palette = if dark {
-            Theme::Dark.palette()
-        } else {
-            Theme::Light.palette()
-        };
-        palette.background = if dark {
-            iced::color!(0x192320)
-        } else {
-            iced::color!(0xf7f8f3)
-        };
-        palette.text = if dark {
-            iced::color!(0xe6eee7)
-        } else {
-            iced::color!(0x20332e)
-        };
-        palette.primary = if dark {
-            iced::color!(0x82c8ad)
-        } else {
-            iced::color!(0x287464)
-        };
-        Theme::custom("Ubrus", palette)
-    })
+    .theme(|ui: &Ui, _| super::style::theme(ui.dark(), ui.system_appearance.high_contrast))
     .subscription(|ui| {
         Subscription::batch([
             if ui.window.is_some() {
-                Subscription::run(portal::system_dark).map(Message::SystemDark)
+                Subscription::run(portal::system_appearance).map(Message::SystemAppearance)
             } else {
                 Subscription::none()
             },

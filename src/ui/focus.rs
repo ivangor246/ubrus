@@ -90,17 +90,17 @@ impl Widget<Message, Theme, Renderer> for Control<'_> {
                     .draw(&tree.children[0], r, theme, style, layout, cursor, &clip)
             });
             if tree.state.downcast_ref::<Focus>().0 && self.forward.is_some() {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds,
-                        border: iced::Border::default()
-                            .width(2)
-                            .rounded(6)
-                            .color(theme.palette().primary),
-                        ..Default::default()
-                    },
-                    iced::Color::TRANSPARENT,
-                );
+                // Two contrasting edges stay visible on both a filled button and the page.
+                for (width, color) in [(3., theme.palette().text), (1., theme.palette().background)] {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds,
+                            border: iced::Border::default().width(width).rounded(6).color(color),
+                            ..Default::default()
+                        },
+                        iced::Color::TRANSPARENT,
+                    );
+                }
             }
         }
     }

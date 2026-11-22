@@ -4,6 +4,7 @@ mod focus;
 mod preview;
 mod report;
 mod runtime;
+mod style;
 mod view;
 pub use runtime::run;
 
@@ -27,7 +28,7 @@ enum Tab {
 #[derive(Clone, Debug)]
 enum Message {
     Event(Box<Event>),
-    SystemDark(bool),
+    SystemAppearance(portal::Appearance),
     Tab(Tab),
     Select(String),
     Monitor(Display),
@@ -71,7 +72,7 @@ enum Message {
 
 struct Ui {
     data: Snapshot,
-    system_dark: Option<bool>,
+    system_appearance: portal::Appearance,
     commands: Sender<Command>,
     window: Option<window::Id>,
     tab: Tab,
@@ -114,7 +115,7 @@ impl Ui {
         let (id, task) = window::open(window::Settings {
             size: Size::new(900., 600.),
             min_size: Some(Size::new(620., 430.)),
-            icon: match artwork::icon("brand", false) {
+            icon: match artwork::brand() {
                 image::Handle::Rgba {
                     width, height, pixels, ..
                 } => window::icon::from_rgba(pixels.to_vec(), width, height).ok(),
@@ -151,7 +152,7 @@ impl Ui {
                         ::image::load_from_memory_with_format(&bytes, ::image::ImageFormat::Png).ok()?;
                         Some(image::Handle::from_bytes(bytes))
                     })
-                    .unwrap_or_else(|| artwork::icon("brand", false))
+                    .unwrap_or_else(artwork::brand)
             });
         }
     }
@@ -322,7 +323,7 @@ impl Ui {
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::SystemDark(dark) => self.system_dark = Some(dark),
+            Message::SystemAppearance(value) => self.system_appearance = value,
             Message::Event(event) => match *event {
                 Event::Open(data) => {
                     self.library_order = data.profile.sorted_ids();

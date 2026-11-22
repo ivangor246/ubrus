@@ -9,7 +9,7 @@ export default class Probe extends Extension {
     enable() {
         if (!GLib.getenv('UBRUS_TEST_SESSION')) throw Error('Requires an isolated test session');
         this.object = Gio.DBusExportedObject.wrapJSObject(
-            '<node><interface name="org.ubrus.Test"><method name="Panel"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="Capture"/><method name="Desktop"/><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
+            '<node><interface name="org.ubrus.Test"><method name="Panel"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="PanelContrast"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="Capture"/><method name="Desktop"/><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
             this,
         );
         this.object.export(Gio.DBus.session, '/org/ubrus/Test');
@@ -19,15 +19,60 @@ export default class Probe extends Extension {
         const bridge = globalThis[Symbol.for('wallpaper@ubrus.org/desktop-bridge')];
         const menu = bridge?.panel.button?.menu;
         if (!menu) return '[]';
-        const entries = menu._getMenuItems().filter(item => item.label);
+        const entries = menu._getMenuItems().filter(item => item.label?.text);
         const labels = entries.map(item => item.label.text);
         if (command) {
             const entry = entries.find(item => item.label.text === command);
             if (!entry) throw Error('Missing panel action: ' + command);
-            if (entry.toggle) entry.toggle();
-            else entry.activate(null);
+            entry.activate(null);
         }
         return JSON.stringify(labels);
+    }
+
+    PanelContrast(mode) {
+        const bridge = globalThis[Symbol.for('wallpaper@ubrus.org/desktop-bridge')];
+        const button = bridge.panel.button;
+        const entries = button.menu._getMenuItems().filter(item => item.label?.text);
+        const bounds = actor => actor?.mapped && actor.has_allocation()
+            ? [...actor.get_transformed_position(), ...actor.get_transformed_size()]
+            : null;
+        if (mode === 'menu-bounds') return JSON.stringify(bounds(button.menu.actor));
+        if (mode === 'reset') {
+            button.menu.close(false);
+            button.style = null;
+            for (const entry of entries) entry.style = null;
+            if (this.previousStylesheet !== undefined) {
+                Main.setThemeStylesheet(this.previousStylesheet);
+                Main.loadTheme();
+                delete this.previousStylesheet;
+            }
+            return '{}';
+        }
+        if (mode !== 'bounds') {
+            if (['Yaru-blue-dark', 'Yaru-blue'].includes(mode)) {
+                if (this.previousStylesheet === undefined)
+                    this.previousStylesheet = Main.getThemeStylesheet()?.get_path() ?? null;
+                Main.setThemeStylesheet(`/usr/share/gnome-shell/theme/${mode}/gnome-shell.css`);
+                Main.loadTheme();
+            }
+            const light = 'color: #25365b; background-color: #faf5df;';
+            const dark = 'color: #e0eecb; background-color: #17253c;';
+            button.style = mode === 'light' ? light : mode === 'dark' ? dark : null;
+            for (const entry of entries)
+                entry.style = mode === 'light' ? dark : mode === 'dark' ? light : null;
+            button.menu.open(false);
+        }
+        const sample = (actor, label) => {
+            const {red, green, blue, alpha} = label.get_theme_node().get_foreground_color();
+            return {bounds: bounds(actor), color: [red, green, blue, alpha]};
+        };
+        const [symbol, state] = button.get_first_child().get_children();
+        const parts = {symbol: sample(symbol, state), state: sample(state, state)};
+        for (const entry of entries) {
+            parts[entry.label.text] = sample(entry._icon, entry.label);
+            parts[entry.label.text + ' (label)'] = sample(entry.label, entry.label);
+        }
+        return JSON.stringify(parts);
     }
 
     Wallpapers() {

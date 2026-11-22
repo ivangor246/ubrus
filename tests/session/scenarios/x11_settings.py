@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections import Counter
 from pathlib import Path
 from subprocess import Popen
 
@@ -118,6 +119,113 @@ def select_option(session, window, setting, value, row):
     wait_for(f'{setting} = {value}', lambda: session.profile()[setting] == value)
 
 
+def icon_colors_match(pixels, color, *, check_outline):
+    background = pixels.most_common(1)[0][0]
+    alpha = color[3] / 255
+    ink = tuple(bg + (fg - bg) * alpha for bg, fg in zip(background, color))
+
+    def distance(a, b):
+        return max(abs(v - w) for v, w in zip(a, b))
+
+    if distance(ink, background) < 32:
+        return False
+    solid = sum(count for pixel, count in pixels.items() if distance(pixel, ink) < 18)
+    if not check_outline or solid < 3:
+        return solid >= 3
+    # Antialiased edges fall between the foreground and background. Catch dark
+    # SVG strokes even if a small part of the shape was successfully recolored.
+    limits = [(min(b, f) - 18, max(b, f) + 18) for b, f in zip(background, ink)]
+    wrong = sum(
+        count
+        for pixel, count in pixels.items()
+        if any(not lo <= v <= hi for v, (lo, hi) in zip(pixel, limits))
+    )
+    visible = sum(count for pixel, count in pixels.items() if distance(pixel, background) > 24)
+    return wrong <= visible * 0.1
+
+
+def check_panel_contrast(session, save_examples=False):
+    def panel(mode):
+        return json.loads(
+            session.call(
+                'org.gnome.Shell',
+                '/org/ubrus/Test',
+                'org.ubrus.Test',
+                'PanelContrast',
+                GLib.Variant('(s)', (mode,)),
+            )[0]
+        )
+
+    try:
+        modes = ['light', 'dark', 'native']
+        modes.extend(
+            theme
+            for theme in ('Yaru-blue-dark', 'Yaru-blue')
+            if Path('/usr/share/gnome-shell/theme', theme, 'gnome-shell.css').is_file()
+        )
+        for mode in modes:
+            panel(mode)
+            samples = {}
+
+            def painted():
+                samples.clear()
+                regions = panel('bounds')
+                session.probe('Capture')
+                with Image.open(session.runtime_dir / 'ubrus-screen.png') as image:
+                    for name, region in regions.items():
+                        bounds = region['bounds']
+                        if not bounds or None in bounds:
+                            samples[name] = 'missing'
+                            continue
+                        x, y, width, height = bounds
+                        box = tuple(round(v) for v in (x, y, x + width, y + height))
+                        colors = Counter(image.crop(box).convert('RGB').getdata())
+                        # The bar actors also cover the corners of their rounded button.
+                        if not icon_colors_match(
+                            colors, region['color'], check_outline=name not in ('symbol', 'state')
+                        ):
+                            samples[name] = colors.most_common(3)
+                return len(regions) == 12 and not samples
+
+            try:
+                wait_for(
+                    f'{mode} bar and popup to paint the themed symbols and text', painted, timeout=8
+                )
+                if save_examples and mode.startswith('Yaru'):
+                    x, y, width, height = panel('menu-bounds')
+                    output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
+                    with Image.open(session.runtime_dir / 'ubrus-screen.png') as image:
+                        image.crop((round(x), round(y), round(x + width), round(y + height))).save(
+                            output / f'panel-{mode}.png'
+                        )
+            except TimeoutError:
+                session.log(f'Menu regions with missing or off-color glyphs: {samples}')
+                shutil.copyfile(
+                    session.runtime_dir / 'ubrus-screen.png',
+                    Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
+                    / 'panel-contrast.png',
+                )
+                raise
+    finally:
+        panel('reset')
+    session.log('verified rendered panel and menu icon colors against opposing Shell themes')
+
+
+def status_text_contrast(window):
+    # Sample the status label independently of the logo, app title and button borders.
+    pixels = Counter(window.capture().crop((156, 22, 275, 43)).convert('RGB').getdata())
+    background = pixels.most_common(1)[0][0]
+
+    def luminance(pixel):
+        srgb = [value / 255 for value in pixel]
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in srgb]
+        return sum(v * weight for v, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+
+    levels = [luminance(pixel) + 0.05 for pixel, count in pixels.items() if count >= 3]
+    surface = luminance(background) + 0.05
+    return max(max(surface / level, level / surface) for level in levels)
+
+
 def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> None:
     for scheme, dark in [('prefer-dark', True), ('default', False)]:
         subprocess.run(
@@ -126,9 +234,31 @@ def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> N
         wait_for(
             f"window to follow GNOME's {scheme} scheme", lambda dark=dark: window.dark() == dark
         )
+        assert status_text_contrast(window) >= 4.5
     for theme, dark in [('dark', True), ('light', False), ('system', False)]:
         select_option(session, window, 'theme', theme, row)
         wait_for(f'the {theme} theme to be visible', lambda dark=dark: window.dark() == dark)
+
+    # Accessibility contrast is independent of the application's light/dark override.
+    for theme, background in [('dark', (0, 0, 0)), ('light', (255, 255, 255))]:
+        select_option(session, window, 'theme', theme, row)
+        subprocess.run(
+            ['gsettings', 'set', 'org.gnome.desktop.a11y.interface', 'high-contrast', 'true'],
+            check=True,
+        )
+        wait_for(
+            'high contrast in ' + theme,
+            lambda: window.capture().getpixel((5, 100))[:3] == background,
+        )
+        assert status_text_contrast(window) >= 7
+        subprocess.run(
+            ['gsettings', 'set', 'org.gnome.desktop.a11y.interface', 'high-contrast', 'false'],
+            check=True,
+        )
+        wait_for(
+            'restore normal contrast', lambda: window.capture().getpixel((5, 100))[:3] != background
+        )
+    select_option(session, window, 'theme', 'system', row)
 
 
 def check_languages(session: DesktopSession, window: SettingsWindow, row: int) -> bytes:
@@ -155,6 +285,12 @@ def check_preferences(
     wait_for('dark theme before restarting', window.dark)
     english_dark = window.heading()
     window.key('alt+F4')
+    wait_for(
+        'settings window to close before restart',
+        lambda: (
+            not subprocess.run(['xdotool', 'search', *SETTINGS_WINDOW], capture_output=True).stdout
+        ),
+    )
     app.terminate()
     app.wait(timeout=8)
     wait_for('the controller to exit', lambda: not session.owns_name(APP_BUS))
@@ -371,6 +507,8 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     )
 
     window = SettingsWindow()
+    check_panel_contrast(session)
+    window.focus()
     photo = session.runtime_dir / ('Landscape panorama with a long gallery title ' * 3 + '.png')
     shutil.copyfile(MEDIA_DIR / 'landscape.png', photo)
     import_file(session, window, photo, 1)
@@ -412,6 +550,7 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
 
     saved = session.profile()['screens']
     wait_for('translated panel actions', lambda: 'Убрать фон Ubrus' in panel())
+    check_panel_contrast(session, save_examples=True)
     panel('Приостановить анимацию')
     wait_for(
         'paused from panel',
@@ -420,6 +559,7 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
         ),
     )
     wait_for('resume action', lambda: 'Продолжить анимацию' in panel())
+    check_panel_contrast(session)
     panel('Продолжить анимацию')
     wait_for('resumed from panel', lambda: not session.profile()['paused'])
     panel('Убрать фон Ubrus')
@@ -432,14 +572,17 @@ def check_first_run(session: DesktopSession, app: Popen) -> Popen:
     )
     assert session.profile()['screens'] == saved
     wait_for('the restore menu item', lambda: 'Вернуть фон Ubrus' in panel())
+    check_panel_contrast(session)
     panel('Вернуть фон Ubrus')
     wait_for('the GIF to resume', gif_is_playing)
     panel('Выключить Ubrus')
     wait_for('Ubrus disabled', lambda: session.profile()['disabled'] and not login_entry.exists())
+    wait_for('enable action', lambda: 'Включить Ubrus' in panel())
+    check_panel_contrast(session)
     panel('Включить Ubrus')
     wait_for('Ubrus enabled', lambda: not session.profile()['disabled'] and login_entry.exists())
     wait_for('the GIF to resume', gif_is_playing)
-    panel('Показывать значок в панели')
+    panel('Убрать значок с панели')
     wait_for('icon removed', lambda: not panel())
     assert session.profile()['screens'] == saved
 
