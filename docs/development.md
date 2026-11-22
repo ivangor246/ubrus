@@ -49,7 +49,7 @@ For a code change, start with the [architecture](architecture.md) and [test guid
 
 ### Test and promote a revision
 
-After the GitHub release, Actions uploads a candidate, installs the signed revision, tests it in GNOME Wayland and checks refresh from stable when available. The Actions summary records the revision. To rerun for an existing release, use `gh workflow run snap.yml --ref v0.2.0 -f channel=candidate`.
+After the GitHub release, Actions checks the Store login, builds the candidate and keeps the verified Snap as a workflow artifact for seven days. If the upload fails, use **Re-run failed jobs** on the same run to reuse the package. Actions installs the signed revision, tests it in GNOME Wayland and checks refresh from stable when available. The run summary records the revision. To start a fresh build for an existing release, use `gh workflow run snap.yml --ref v0.2.0 -f channel=candidate`.
 
 Install or refresh from `latest/candidate` on both supported Ubuntu versions. Match `snap list ubrus` to the recorded revision. Check extension updates, saved assignments, playback on separate monitors, lock/unlock, suspend/resume and physical monitor reconnection. Record the OS, GPU and results in the release issue.
 

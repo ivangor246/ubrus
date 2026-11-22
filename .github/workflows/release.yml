@@ -60,5 +60,7 @@ jobs:
     needs: release
     if: vars.SNAP_STORE_ENABLED == 'true'
     uses: ./.github/workflows/snap.yml
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
     with:
       channel: candidate

@@ -1,6 +1,9 @@
 name: Snap Store
 on:
   workflow_call:
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS:
+        required: true
     inputs:
       channel:
         description: Store channel for the tag workflow
@@ -41,30 +44,61 @@ jobs:
           /usr/bin/python3 packaging/check-release.py --tag "$GITHUB_REF_NAME"
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
 
-  candidate:
+  build:
     needs: source
     if: inputs.channel == 'candidate'
     runs-on: ubuntu-24.04
     environment: snap-candidate
-    outputs:
-      revision: ${{ steps.upload.outputs.revision }}
     steps:
+      - name: Check Snap Store login before building
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          : "${SNAPCRAFT_STORE_CREDENTIALS:?Missing credentials for the snap-candidate environment}"
+          sudo snap install snapcraft --classic
+          snapcraft whoami > /dev/null
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - id: build
         uses: canonical/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
-      - name: Validate and upload to latest/candidate
-        id: upload
+      - name: Validate the candidate package
         env:
           SNAP_FILE: ${{ steps.build.outputs.snap }}
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         run: |
           sudo apt-get install -y python3-yaml squashfs-tools
           bash packaging/extension.sh
           /usr/bin/python3 packaging/check-release.py --tag "$GITHUB_REF_NAME" --snap "$SNAP_FILE"
-          snapcraft upload "$SNAP_FILE" --release=latest/candidate
-          for attempt in {1..12}; do
+          mv -- "$SNAP_FILE" "$RUNNER_TEMP/ubrus.snap"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ubrus-snap-amd64
+          path: ${{ runner.temp }}/ubrus.snap
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 7
+
+  candidate:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: snap-candidate
+    outputs:
+      revision: ${{ steps.upload.outputs.revision }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ubrus-snap-amd64
+          path: ${{ runner.temp }}/candidate
+      - run: sudo snap install snapcraft --classic
+      - name: Upload to latest/candidate and identify the signed revision
+        id: upload
+        env:
+          SNAP_FILE: ${{ runner.temp }}/candidate/ubrus.snap
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          : "${SNAPCRAFT_STORE_CREDENTIALS:?Missing credentials for the snap-candidate environment}"
+          for attempt in {0..12}; do
             if snap download ubrus --channel=latest/candidate --basename="upload-$attempt" &&
                cmp -s "$SNAP_FILE" "upload-$attempt.snap"; then
               revision=$(sed -n 's/^snap-revision: //p' "upload-$attempt.assert")
@@ -73,7 +107,11 @@ jobs:
               echo "Signed amd64 candidate revision: $revision" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            sleep 10
+            if (( attempt == 0 )); then
+              snapcraft upload "$SNAP_FILE" --release=latest/candidate
+            elif (( attempt < 12 )); then
+              sleep 10
+            fi
           done
           echo "The Store has not served the uploaded package from latest/candidate." >&2
           exit 1
