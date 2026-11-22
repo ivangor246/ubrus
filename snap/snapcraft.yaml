@@ -37,6 +37,7 @@ parts:
     build-environment:
       - CARGO_BUILD_JOBS: '1'
     build-packages:
+      - rustup
       - libgtk-4-dev
       - libgstreamer-plugins-base1.0-dev
       - libdrm-dev
