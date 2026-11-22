@@ -9,7 +9,7 @@ export default class Probe extends Extension {
     enable() {
         if (!GLib.getenv('UBRUS_TEST_SESSION')) throw Error('Requires an isolated test session');
         this.object = Gio.DBusExportedObject.wrapJSObject(
-            '<node><interface name="org.ubrus.Test"><method name="Panel"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="PanelContrast"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="Capture"/><method name="Desktop"/><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
+            '<node><interface name="org.ubrus.Test"><method name="Panel"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="PanelContrast"><arg type="s" direction="in"/><arg type="s" direction="out"/></method><method name="Capture"/><method name="Desktop"><arg type="b" direction="out"/></method><method name="Overview"><arg type="s" direction="out"/></method><method name="Import"/><method name="Arrange"/><method name="Windows"><arg type="s" direction="out"/></method><method name="Wallpapers"><arg type="s" direction="out"/></method></interface></node>',
             this,
         );
         this.object.export(Gio.DBus.session, '/org/ubrus/Test');
@@ -153,7 +153,10 @@ export default class Probe extends Extension {
     }
 
     Desktop() {
+        // Shell can open the overview after the probe is already reachable.
+        if (Main.layoutManager._startingUp) return false;
         Main.overview.hide();
+        return !Main.overview.visible && !Main.overview.animationInProgress;
     }
 
     Overview() {

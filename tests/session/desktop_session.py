@@ -106,6 +106,9 @@ class DesktopSession:
     def probe(self, method: str) -> tuple:
         return self.call('org.gnome.Shell', '/org/ubrus/Test', 'org.ubrus.Test', method)
 
+    def show_desktop(self) -> None:
+        wait_for('GNOME Shell to finish startup and leave the overview', lambda: self.probe('Desktop')[0])
+
     def window_layout(self) -> dict:
         return json.loads(self.probe('Windows')[0])
 

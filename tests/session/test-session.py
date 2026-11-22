@@ -96,7 +96,7 @@ def start_shell(session: DesktopSession, extension_root: Path | None = None) -> 
     wait_for('the wallpaper extension', lambda: session.extension('GetExtensionInfo')[0])
     session.extension('EnableExtension')
     session.extension('EnableExtension', PROBE_EXTENSION)
-    wait_for('the test probe', lambda: session.probe('Desktop') == ())
+    session.show_desktop()
 
 
 def start_controller(session: DesktopSession) -> subprocess.Popen:

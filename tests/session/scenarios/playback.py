@@ -86,8 +86,7 @@ def check_decoder(session: DesktopSession) -> int:
 
 
 def check_desktop_pixels(session: DesktopSession) -> None:
-    session.probe('Desktop')
-    time.sleep(1)
+    session.show_desktop()
 
     def capture() -> bytes:
         session.probe('Capture')
@@ -141,7 +140,7 @@ def check_workspace_previews(session: DesktopSession) -> None:
 
         wait_for('new wallpaper pixels in the overview', four_distinct_frames, timeout=5)
     finally:
-        session.probe('Desktop')
+        session.show_desktop()
     session.log('workspace previews retained the monitor aspect ratio')
 
 
