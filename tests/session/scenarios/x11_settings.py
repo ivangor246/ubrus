@@ -60,8 +60,9 @@ class SettingsWindow:
         xdotool('mousemove', '--window', self.id, str(x), str(y), 'click', '1')
 
     def capture(self, box=(0, 0, 550, 380)) -> Image.Image:
-        self.geometry()
-        x1, y1, x2, y2 = box
+        """Capture window-relative pixels, or the full client area when box is None."""
+        width, height = self.geometry()
+        x1, y1, x2, y2 = box if box is not None else (0, 0, width, height)
         bounds = (self.left + x1, self.top + y1, self.left + x2, self.top + y2)
         return ImageGrab.grab(bbox=bounds, xdisplay=os.environ['DISPLAY'])
 
@@ -96,31 +97,49 @@ def photo_tile(window):
     return None
 
 
+def wait_for_editor(window, width, height):
+    last_frame = 'no frame captured'
+
+    # A wide editor shares the row with the gallery. A narrow editor has its own page.
+    def drawn():
+        nonlocal last_frame
+        screen = window.capture(None)
+        if screen.size != (width, height):
+            last_frame = f'window size {screen.size}'
+            return None
+        blue = (37, 91, 156)
+        green = (32, 132, 61)
+        x = width // 2 if width == 620 else width - 175
+        colors = screen.crop((x, 0, x + 1, height - 12)).convert('RGB').getdata()
+        blue_rows = [y for y, color in enumerate(colors) if color == blue]
+        green_rows = [y for y, color in enumerate(colors) if color == green]
+        last_frame = f'{len(blue_rows)} blue and {len(green_rows)} green rows at x={x}'
+        if not blue_rows or not green_rows or blue_rows[-1] >= green_rows[0]:
+            return None
+        # The fixture has two equal bands. Resampling blends their shared edge.
+        span = green_rows[-1] - blue_rows[0] + 1
+        if abs(span - height * 0.32) > 8 or min(len(blue_rows), len(green_rows)) < span * 0.45:
+            return None
+        if screen.getpixel((x, height - 12))[:3] in (blue, green):
+            raise AssertionError('The preview overlaps the editor footer')
+        return screen
+
+    try:
+        return wait_for(f'{width}×{height} editor', drawn, timeout=6)
+    except TimeoutError as error:
+        raise TimeoutError(f'{error}; last frame: {last_frame}') from error
+
+
 def check_responsive(session, window, variant):
     for width, height in [(1440, 900), (620, 430), (900, 600)]:
         xdotool('windowsize', '--sync', window.id, str(width), str(height))
-
-        # A wide editor shares the row with the gallery. A narrow editor has its own page.
-        def drawn():
-            if window.geometry() != (width, height):
-                return None
-            screen = window.capture((0, 0, width, height))
-            blue = (37, 91, 156)
-            green = (32, 132, 61)
-            x = width // 2 if width == 620 else width - 175
-            colors = [screen.getpixel((x, y))[:3] for y in range(110, height - 90)]
-            actual_height = colors.count(blue) + colors.count(green)
-            if blue not in colors or green not in colors or abs(actual_height - height * 0.32) > 8:
-                return None
-            if screen.getpixel((x, height - 12))[:3] in (blue, green):
-                raise AssertionError('The preview overlaps the editor footer')
-            return screen
-
-        # Reopening the gallery at a narrow size can require a deliberate selection.
-        if width == 620 and not drawn():
-            point = wait_for('the photo at the narrow window size', lambda: photo_tile(window))
+        screenshot = wait_for_editor(window, width, height)
+        if width == 620:
+            # Enter the gallery explicitly after the narrow editor has been painted.
+            window.key('Escape')
+            point = wait_for('the photo in the narrow gallery', lambda: photo_tile(window))
             window.click(*point)
-        screenshot = wait_for(f'{width}×{height} editor ({variant})', drawn, timeout=6)
+            screenshot = wait_for_editor(window, width, height)
         output = Path(os.getenv('UBRUS_TEST_LOG_DIR', 'tests/artifacts/session-tests'))
         screenshot.save(output / f'editor-{variant}-{width}.png')
     session.log(f'checked editor at three window sizes ({variant})')

@@ -9,6 +9,7 @@ test-integration: build
 
 .PHONY: test-controller test-renderer
 test-controller: build
+	/usr/bin/python3 tests/session/test_x11_resize.py
 	UBRUS_TEST_COMPONENT=controller bash tests/session/test-session.sh x11
 test-renderer: build
 	UBRUS_TEST_COMPONENT=renderer bash tests/session/test-session.sh x11
