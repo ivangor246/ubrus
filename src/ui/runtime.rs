@@ -116,7 +116,13 @@ pub fn run(initial: Snapshot, events: Receiver<Event>, commands: Sender<Command>
 }
 
 fn shortcut(event: keyboard::Event) -> Option<Message> {
-    if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+    if let keyboard::Event::KeyPressed {
+        key,
+        physical_key,
+        modifiers,
+        ..
+    } = event
+    {
         if key == keyboard::Key::Named(keyboard::key::Named::Escape) {
             return Some(Message::Back);
         }
@@ -146,11 +152,15 @@ fn shortcut(event: keyboard::Event) -> Option<Message> {
             return None;
         }
 
-        return match key.as_ref() {
-            keyboard::Key::Character("d") | keyboard::Key::Character("в") => Some(Message::Tab(Tab::Diagnostics)),
-            keyboard::Key::Character("o") | keyboard::Key::Character("щ") => Some(Message::Import),
-            keyboard::Key::Named(keyboard::key::Named::Enter) => Some(Message::Apply),
-            keyboard::Key::Character(",") | keyboard::Key::Character("б") => Some(Message::Tab(Tab::Preferences)),
+        use keyboard::key::{Code, Named, Physical};
+        if key == keyboard::Key::Named(Named::Enter) {
+            return Some(Message::Apply);
+        }
+        return match key.to_latin(physical_key) {
+            Some('d') => Some(Message::Tab(Tab::Diagnostics)),
+            Some('o') => Some(Message::Import),
+            Some(',') => Some(Message::Tab(Tab::Preferences)),
+            None if physical_key == Physical::Code(Code::Comma) => Some(Message::Tab(Tab::Preferences)),
             _ => None,
         };
     }

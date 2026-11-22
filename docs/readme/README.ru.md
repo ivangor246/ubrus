@@ -1,6 +1,6 @@
 # Ubrus
 
-[English](../README.md) · **Русский**
+[English](../../README.md) · **Русский** · [Čeština](README.cs.md) · [Deutsch](README.de.md) · [Bahasa Indonesia](README.id.md) · [Italiano](README.it.md) · [Nederlands](README.nl.md) · [Português (Portugal)](README.pt-PT.md) · [Türkçe](README.tr.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
 [![CI](https://github.com/ivangor246/ubrus/actions/workflows/ci.yml/badge.svg)](https://github.com/ivangor246/ubrus/actions/workflows/ci.yml)
 [![Последний выпуск](https://img.shields.io/github/v/release/ivangor246/ubrus)](https://github.com/ivangor246/ubrus/releases/latest)
@@ -12,7 +12,7 @@
 
 **[Скачать для Ubuntu (.deb, amd64)](https://github.com/ivangor246/ubrus/releases/latest/download/ubrus-amd64.deb)** · [Все файлы выпуска](https://github.com/ivangor246/ubrus/releases/latest)
 
-![Редактор Ubrus в тёмной теме. В библиотеке выбраны обои «Янтарные дюны»](assets/editor-ru.png)
+![Редактор Ubrus в тёмной теме. В библиотеке выбраны обои «Янтарные дюны»](../assets/editor-ru.png)
 
 ## Установка
 
@@ -32,6 +32,6 @@ gnome-extensions enable wallpaper@ubrus.org
 
 ## О проекте
 
-[Сборка из исходников](development.md) · [Сообщить об ошибке](https://github.com/ivangor246/ubrus/issues) · [MIT](../LICENSE-MIT) или [Apache 2.0](../LICENSE-APACHE)
+[Сборка из исходников](../development.md) · [Сообщить об ошибке](https://github.com/ivangor246/ubrus/issues) · [MIT](../../LICENSE-MIT) или [Apache 2.0](../../LICENSE-APACHE)
 
 **Теги** · [wallpaper-manager](https://github.com/topics/wallpaper-manager) · [animated-wallpaper](https://github.com/topics/animated-wallpaper) · [gnome-shell-extension](https://github.com/topics/gnome-shell-extension) · [rust](https://github.com/topics/rust)

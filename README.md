@@ -1,6 +1,6 @@
 # Ubrus
 
-**English** · [Русский](docs/README.ru.md)
+**English** · [Русский](docs/readme/README.ru.md) · [Čeština](docs/readme/README.cs.md) · [Deutsch](docs/readme/README.de.md) · [Bahasa Indonesia](docs/readme/README.id.md) · [Italiano](docs/readme/README.it.md) · [Nederlands](docs/readme/README.nl.md) · [Português (Portugal)](docs/readme/README.pt-PT.md) · [Türkçe](docs/readme/README.tr.md) · [日本語](docs/readme/README.ja.md) · [한국어](docs/readme/README.ko.md) · [简体中文](docs/readme/README.zh-Hans.md) · [繁體中文](docs/readme/README.zh-Hant.md)
 
 [![CI](https://github.com/ivangor246/ubrus/actions/workflows/ci.yml/badge.svg)](https://github.com/ivangor246/ubrus/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ivangor246/ubrus)](https://github.com/ivangor246/ubrus/releases/latest)

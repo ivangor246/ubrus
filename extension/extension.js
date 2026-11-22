@@ -228,7 +228,7 @@ export default class Wallpaper extends Extension {
             keep = new Set();
         this.outputs = Main.layoutManager.monitors.map((m) => {
             this.rendererWindows.positionWindow(m);
-            const ident = this.monitorIds.get(`${m.x},${m.y}`) ?? { id: '', name: `Monitor ${m.index + 1}` };
+            const ident = this.monitorIds.get(`${m.x},${m.y}`) ?? { id: '', name: '' };
             const s = this.scene.screens[ident.id] ?? this.scene.screens['*'];
             // A fullscreen client owns the output even when its buffer carries an alpha channel.
             // For ordinary windows use the compositor's opaque region, preserving visible gaps.

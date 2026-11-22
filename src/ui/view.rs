@@ -479,7 +479,7 @@ impl Ui {
                 frame.zoom,
                 100..=400,
                 1,
-                format!("{}%", frame.zoom),
+                l.percent(frame.zoom),
                 Message::Zoom,
             ))
             .push(setting(
@@ -487,7 +487,7 @@ impl Ui {
                 frame.brightness,
                 0..=150,
                 1,
-                format!("{}%", frame.brightness),
+                l.percent(frame.brightness),
                 Message::Brightness,
             ));
         if item.animated() {
@@ -497,7 +497,7 @@ impl Ui {
                     frame.speed,
                     25..=400,
                     25,
-                    format!("{}×", f32::from(frame.speed) / 100.),
+                    l.speed(frame.speed),
                     Message::Speed,
                 ))
                 .push(self.command(

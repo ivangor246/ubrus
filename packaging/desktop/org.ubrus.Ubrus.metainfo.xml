@@ -6,26 +6,114 @@
   <name>Ubrus</name>
   <summary>Choose still and animated wallpapers for each monitor</summary>
   <summary xml:lang="ru">Выбирайте обычные и анимированные обои для каждого монитора</summary>
+  <summary xml:lang="it">Scegli uno sfondo statico o animato per ogni monitor</summary>
+  <summary xml:lang="cs">Vyberte statickou nebo animovanou tapetu pro každý monitor</summary>
+  <summary xml:lang="nl">Kies per beeldscherm een stilstaande of bewegende achtergrond</summary>
+  <summary xml:lang="pt">Escolha fundos estáticos ou animados para cada monitor</summary>
+  <summary xml:lang="de">Für jeden Bildschirm ein statisches oder animiertes Hintergrundbild wählen</summary>
+  <summary xml:lang="ja">ディスプレイごとに静止画やアニメーションの壁紙を選べます</summary>
+  <summary xml:lang="ko">모니터마다 정지 이미지나 애니메이션을 배경 화면으로 설정하세요</summary>
+  <summary xml:lang="zh">为每台显示器选择静态或动态壁纸</summary>
+  <summary xml:lang="zh_CN">为每台显示器选择静态或动态壁纸</summary>
+  <summary xml:lang="zh-Hans">为每台显示器选择静态或动态壁纸</summary>
+  <summary xml:lang="zh_SG">为每台显示器选择静态或动态壁纸</summary>
+  <summary xml:lang="zh_TW">為每部顯示器選擇靜態或動態桌布</summary>
+  <summary xml:lang="zh-Hant">為每部顯示器選擇靜態或動態桌布</summary>
+  <summary xml:lang="zh_HK">為每部顯示器選擇靜態或動態桌布</summary>
+  <summary xml:lang="zh_MO">為每部顯示器選擇靜態或動態桌布</summary>
+  <summary xml:lang="tr">Her monitör için sabit veya hareketli bir duvar kâğıdı seçin</summary>
+  <summary xml:lang="id">Pilih gambar latar diam atau animasi untuk setiap monitor</summary>
   <description>
     <p>Import local pictures, videos and GIFs and preview them on your GNOME desktop.
     Assign a wallpaper to each display, pause playback, and restore your selection when you sign in.</p>
     <p xml:lang="ru">Добавляйте изображения, видео и GIF, просматривайте их и назначайте каждому монитору свой фон.
     Приостанавливайте анимацию и восстанавливайте выбор при входе в GNOME.</p>
+    <p xml:lang="it">Importa immagini, video e GIF e visualizza l'anteprima sulla scrivania GNOME. Assegna uno sfondo a ogni monitor, metti in pausa la riproduzione e ripristina gli sfondi all'accesso.</p>
+    <p xml:lang="cs">Importujte místní obrázky, videa a GIFy a prohlédněte si je na ploše GNOME. Každému monitoru můžete přiřadit vlastní tapetu, pozastavit přehrávání a obnovit tapety při přihlášení.</p>
+    <p xml:lang="nl">Importeer lokale afbeeldingen, video's en GIF's en bekijk ze op je GNOME-bureaublad. Kies een achtergrond per beeldscherm, pauzeer het afspelen en herstel je keuze bij het aanmelden.</p>
+    <p xml:lang="pt">Importe imagens, vídeos e GIF locais e pré-visualize-os no ambiente de trabalho GNOME. Atribua um fundo a cada monitor, pause a reprodução e restaure a seleção ao iniciar sessão.</p>
+    <p xml:lang="de">Importieren Sie lokale Bilder, Videos und GIFs und sehen Sie sich die Vorschau auf dem GNOME-Desktop an. Weisen Sie jedem Bildschirm ein Hintergrundbild zu, pausieren Sie die Wiedergabe und stellen Sie Ihre Auswahl bei der Anmeldung wieder her.</p>
+    <p xml:lang="ja">手元の画像、動画、GIF を読み込み、GNOME デスクトップでプレビューできます。ディスプレイごとに壁紙を割り当てたり、再生を一時停止したり、ログイン時に壁紙を復元したりできます。</p>
+    <p xml:lang="ko">로컬 이미지, 동영상, GIF를 가져와 GNOME 데스크톱에서 미리 볼 수 있습니다. 모니터마다 배경 화면을 지정하고, 재생을 일시 정지하거나 로그인 시 선택한 배경을 복원하세요.</p>
+    <p xml:lang="zh">导入本地图片、视频和 GIF，并在 GNOME 桌面上预览。可以为每台显示器单独设置壁纸、暂停播放，并在登录时恢复设置。</p>
+    <p xml:lang="zh_CN">导入本地图片、视频和 GIF，并在 GNOME 桌面上预览。可以为每台显示器单独设置壁纸、暂停播放，并在登录时恢复设置。</p>
+    <p xml:lang="zh-Hans">导入本地图片、视频和 GIF，并在 GNOME 桌面上预览。可以为每台显示器单独设置壁纸、暂停播放，并在登录时恢复设置。</p>
+    <p xml:lang="zh_SG">导入本地图片、视频和 GIF，并在 GNOME 桌面上预览。可以为每台显示器单独设置壁纸、暂停播放，并在登录时恢复设置。</p>
+    <p xml:lang="zh_TW">匯入本機圖片、影片和 GIF，並在 GNOME 桌面上預覽。您可以為每部顯示器個別設定桌布、暫停播放，並在登入時還原設定。</p>
+    <p xml:lang="zh-Hant">匯入本機圖片、影片和 GIF，並在 GNOME 桌面上預覽。您可以為每部顯示器個別設定桌布、暫停播放，並在登入時還原設定。</p>
+    <p xml:lang="zh_HK">匯入本機圖片、影片和 GIF，並在 GNOME 桌面上預覽。您可以為每部顯示器個別設定桌布、暫停播放，並在登入時還原設定。</p>
+    <p xml:lang="zh_MO">匯入本機圖片、影片和 GIF，並在 GNOME 桌面上預覽。您可以為每部顯示器個別設定桌布、暫停播放，並在登入時還原設定。</p>
+    <p xml:lang="tr">Yerel görselleri, videoları ve GIF'leri içe aktarın ve GNOME masaüstünüzde ön izleyin. Her ekrana bir duvar kâğıdı atayabilir, oynatmayı duraklatabilir ve oturum açtığınızda seçiminizi geri yükleyebilirsiniz.</p>
+    <p xml:lang="id">Impor gambar, video, dan GIF lokal lalu lihat pratinjaunya di desktop GNOME. Tentukan gambar latar untuk setiap monitor, jeda pemutaran, dan pulihkan pilihan Anda saat masuk.</p>
   </description>
   <url type="homepage">https://github.com/ivangor246/ubrus</url>
   <url type="bugtracker">https://github.com/ivangor246/ubrus/issues</url>
-  <url type="help">https://github.com/ivangor246/ubrus#install-on-ubuntu</url>
+  <url type="help">https://github.com/ivangor246/ubrus#installation</url>
   <screenshots>
     <screenshot type="default">
       <caption>Wallpaper library and monitor adjustments</caption>
       <caption xml:lang="ru">Библиотека обоев и настройки монитора</caption>
+      <caption xml:lang="it">Libreria degli sfondi e regolazioni del monitor</caption>
+      <caption xml:lang="cs">Knihovna tapet a nastavení monitoru</caption>
+      <caption xml:lang="nl">Achtergrondbibliotheek en beeldscherminstellingen</caption>
+      <caption xml:lang="pt">Biblioteca de fundos e ajustes do monitor</caption>
+      <caption xml:lang="de">Hintergrundbildbibliothek und Bildschirmeinstellungen</caption>
+      <caption xml:lang="ja">壁紙ライブラリとディスプレイの調整</caption>
+      <caption xml:lang="ko">배경 화면 라이브러리 및 모니터 조정</caption>
+      <caption xml:lang="zh">壁纸库和显示器调整选项</caption>
+      <caption xml:lang="zh_CN">壁纸库和显示器调整选项</caption>
+      <caption xml:lang="zh-Hans">壁纸库和显示器调整选项</caption>
+      <caption xml:lang="zh_SG">壁纸库和显示器调整选项</caption>
+      <caption xml:lang="zh_TW">桌布庫與顯示器調整選項</caption>
+      <caption xml:lang="zh-Hant">桌布庫與顯示器調整選項</caption>
+      <caption xml:lang="zh_HK">桌布庫與顯示器調整選項</caption>
+      <caption xml:lang="zh_MO">桌布庫與顯示器調整選項</caption>
+      <caption xml:lang="tr">Duvar kâğıdı kitaplığı ve monitör ayarları</caption>
+      <caption xml:lang="id">Pustaka gambar latar dan penyesuaian monitor</caption>
       <image type="source" width="1000" height="650">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-en.png</image>
       <image type="source" width="1000" height="650" xml:lang="ru">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-ru.png</image>
+      <image type="source" width="1000" height="650" xml:lang="it">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-it.png</image>
+      <image type="source" width="1000" height="650" xml:lang="cs">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-cs.png</image>
+      <image type="source" width="1000" height="650" xml:lang="nl">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-nl.png</image>
+      <image type="source" width="1000" height="650" xml:lang="pt">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-pt-PT.png</image>
+      <image type="source" width="1000" height="650" xml:lang="de">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-de.png</image>
+      <image type="source" width="1000" height="650" xml:lang="ja">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-ja.png</image>
+      <image type="source" width="1000" height="650" xml:lang="ko">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-ko.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hans.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh_CN">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hans.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh-Hans">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hans.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh_SG">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hans.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh_TW">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hant.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh-Hant">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hant.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh_HK">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hant.png</image>
+      <image type="source" width="1000" height="650" xml:lang="zh_MO">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-zh-Hant.png</image>
+      <image type="source" width="1000" height="650" xml:lang="tr">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-tr.png</image>
+      <image type="source" width="1000" height="650" xml:lang="id">https://raw.githubusercontent.com/ivangor246/ubrus/main/docs/assets/editor-id.png</image>
     </screenshot>
   </screenshots>
   <launchable type="desktop-id">org.ubrus.Ubrus.desktop</launchable>
   <provides><binary>ubrus</binary></provides>
-  <developer id="org.ubrus"><name>Ubrus contributors</name></developer>
+  <developer id="org.ubrus">
+    <name>Ubrus contributors</name>
+    <name xml:lang="ru">Участники проекта Ubrus</name>
+    <name xml:lang="cs">Přispěvatelé projektu Ubrus</name>
+    <name xml:lang="de">Mitwirkende von Ubrus</name>
+    <name xml:lang="id">Kontributor Ubrus</name>
+    <name xml:lang="it">Collaboratori di Ubrus</name>
+    <name xml:lang="nl">Bijdragers aan Ubrus</name>
+    <name xml:lang="pt">Colaboradores do Ubrus</name>
+    <name xml:lang="tr">Ubrus katkıcıları</name>
+    <name xml:lang="ja">Ubrus 貢献者</name>
+    <name xml:lang="ko">Ubrus 기여자</name>
+    <name xml:lang="zh">Ubrus 贡献者</name>
+    <name xml:lang="zh_CN">Ubrus 贡献者</name>
+    <name xml:lang="zh-Hans">Ubrus 贡献者</name>
+    <name xml:lang="zh_SG">Ubrus 贡献者</name>
+    <name xml:lang="zh_HK">Ubrus 貢獻者</name>
+    <name xml:lang="zh_TW">Ubrus 貢獻者</name>
+    <name xml:lang="zh-Hant">Ubrus 貢獻者</name>
+    <name xml:lang="zh_MO">Ubrus 貢獻者</name>
+  </developer>
   <content_rating type="oars-1.1"/>
   <releases><release version="0.2.0" date="2026-11-21"/><release version="0.1.0" date="2026-11-21"/></releases>
 </component>

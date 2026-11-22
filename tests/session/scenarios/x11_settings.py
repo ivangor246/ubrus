@@ -64,7 +64,7 @@ class SettingsWindow:
         return ImageGrab.grab(bbox=bounds, xdisplay=os.environ['DISPLAY'])
 
     def heading_is_drawn(self) -> bool:
-        # The Ubrus label in the navigation bar is visible in both themes and languages.
+        # The Ubrus label in the navigation bar is visible in all themes and languages.
         label = self.capture().crop((20, 20, 105, 55)).convert('L')
         darkest, lightest = label.getextrema()
         return lightest - darkest > 70
@@ -121,12 +121,21 @@ def check_responsive(session, window, variant):
 def select_option(session, window, setting, value, row):
     # Each menu places its first item underneath the field.
     x = 72 if setting == 'theme' else 208
-    choices = (
-        ['system', 'light', 'dark'] if setting == 'theme' else ['system', 'english', 'russian']
-    )
+    choices = ['system', 'light', 'dark'] if setting == 'theme' else [
+        'system', 'english', 'russian', 'cs', 'de', 'id', 'it', 'nl',
+        'pt-PT', 'tr', 'ja', 'ko', 'zh-Hans', 'zh-Hant',
+    ]
+
+    def menu_open():
+        image = window.capture()
+        y = row + 40
+        return image.getpixel((x + 7, y)) != image.getpixel((5, y))
+
     window.click(x, row)
-    window.click(x, row + 31 + 30 * choices.index(value))
+    wait_for(f'the {setting} menu to open', menu_open)
+    window.click(x, row + 31 + 31 * choices.index(value))
     wait_for(f'{setting} = {value}', lambda: session.profile()[setting] == value)
+    wait_for(f'the {setting} menu to close', lambda: not menu_open())
 
 
 def icon_colors_match(pixels, color, *, check_outline):
@@ -274,8 +283,12 @@ def check_themes(session: DesktopSession, window: SettingsWindow, row: int) -> N
 def check_languages(session: DesktopSession, window: SettingsWindow, row: int) -> bytes:
     english = window.heading()
     select_option(session, window, 'language', 'russian', row)
-    wait_for('a translated settings heading', lambda: window.heading() != english)
-    russian = window.heading()
+    wait_for('the Russian settings heading', lambda: window.heading() != english)
+    russian = previous = window.heading()
+    for locale in ('pt-PT', 'ja', 'ko', 'zh-Hans', 'zh-Hant'):
+        select_option(session, window, 'language', locale, row)
+        wait_for(f'the {locale} settings heading', lambda: window.heading() != previous)
+        previous = window.heading()
     select_option(session, window, 'language', 'english', row)
     wait_for('the English settings heading', lambda: window.heading() == english)
     select_option(session, window, 'language', 'system', row)
@@ -328,7 +341,7 @@ def check_preferences(
         wait_for('restored Russian settings', lambda: window.heading() == russian_heading)
     check_diagnostics(session, window, russian_heading)
     session.log(
-        'followed live GNOME theme changes; switched both languages and themes; reopened with saved overrides'
+        'followed live GNOME theme changes; switched languages and themes; reopened with saved overrides'
     )
     return app, window, russian_heading
 
@@ -418,10 +431,10 @@ def check_diagnostics(
 
     def public_report():
         value = clipboard_text()
-        return value if 'Displays:' in value else None
+        return value if 'Экраны:' in value else None
 
     public = wait_for('the keyboard-activated public report', public_report)
-    assert public.startswith('Ubrus ') and 'Session: X11' in public
+    assert public.startswith('Ubrus ') and 'Сеанс: X11' in public
     assert str(session.library) not in public and 'Landscape panorama' not in public
 
     private_marker = f'Local-only path: {session.runtime_dir}/personal-picture.png'

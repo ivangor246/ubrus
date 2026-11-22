@@ -69,36 +69,39 @@ pub fn wallpaper_status(profile: &library::Profile, status: &super::control::Sta
 // Construct public reports from typed fields. Paths, monitor identities, user filenames,
 // diagnostic logs and free-form service error messages belong only in the private report.
 pub fn public_report(profile: &library::Profile, status: &super::control::Status) -> String {
+    let locale = profile.language.locale();
+    let t = |key| locale.get(key);
     let session = match std::env::var("XDG_SESSION_TYPE").as_deref() {
         Ok("x11") => "X11",
         Ok("wayland") => "Wayland",
-        _ => "unknown",
+        _ => t(Text::ReportUnknown),
     };
+    let package = if std::env::var_os("SNAP").is_some() {
+        "Snap"
+    } else {
+        t(Text::ReportNative)
+    };
+    let connected = t(if status.connected {
+        Text::ReportOn
+    } else {
+        Text::ReportOff
+    });
     let mut lines = vec![
         format!("Ubrus {}", env!("CARGO_PKG_VERSION")),
-        format!("Session: {session}"),
-        format!(
-            "Package: {}",
-            if std::env::var_os("SNAP").is_some() {
-                "Snap"
-            } else {
-                "native"
-            }
-        ),
-        format!("Extension connected: {}", status.connected),
-        format!("Wallpaper: {}", Locale::English.get(wallpaper_status(profile, status))),
-        format!("Displays: {}", status.outputs.len()),
+        format!("{}: {session}", t(Text::ReportSession)),
+        format!("{}: {package}", t(Text::ReportPackage)),
+        format!("{}: {connected}", t(Text::ReportShellExtension)),
+        format!("{}: {}", t(Text::ReportWallpaper), t(wallpaper_status(profile, status))),
+        format!("{}: {}", t(Text::ReportDisplays), status.outputs.len()),
     ];
     for (index, output) in status.outputs.iter().enumerate() {
-        let reason = match output.reason.as_str() {
-            reason @ ("manual" | "power-saver" | "overview" | "covered" | "visible" | "static") => reason,
-            _ => "unknown",
-        };
         lines.push(format!(
-            "Display {}: {}×{}, {reason}",
+            "{} {}: {}×{}, {}",
+            t(Text::Screen),
             index + 1,
             output.width,
-            output.height
+            output.height,
+            t(display_reason(&output.reason))
         ));
     }
     if let Some(streams) = status.engine["streams"].as_array() {
@@ -106,18 +109,34 @@ pub fn public_report(profile: &library::Profile, status: &super::control::Status
             let count = |field: &str| {
                 stream[field]
                     .as_u64()
-                    .map_or_else(|| "unknown".into(), |v| v.to_string())
+                    .map_or_else(|| t(Text::ReportUnknown).into(), |v| v.to_string())
             };
             lines.push(format!(
-                "Stream {}: {} decoded, {} rendered, {} dropped",
+                "{} {}: {} {}, {} {}, {} {}",
+                t(Text::ReportStream),
                 index + 1,
+                t(Text::ReportDecoded),
                 count("decoded"),
+                t(Text::ReportRendered),
                 count("rendered"),
+                t(Text::ReportDropped),
                 count("dropped")
             ));
         }
     }
     lines.join("\n")
+}
+
+fn display_reason(reason: &str) -> Text {
+    match reason {
+        "static" => Text::ReportStillImage,
+        "covered" => Text::ReportCoveredByWindows,
+        "power-saver" => Text::ReportPowerSaver,
+        "manual" => Text::ReportPausedManually,
+        "overview" => Text::ReportPausedInOverview,
+        "visible" => Text::ReportVisible,
+        _ => Text::ReportUnknown,
+    }
 }
 
 pub fn settings(locale: Locale, p: &library::Profile, status: &super::control::Status) -> String {
@@ -154,18 +173,16 @@ pub fn settings(locale: Locale, p: &library::Profile, status: &super::control::S
     if p.screens.contains_key(ALL) {
         lines.push(format!("{} · {}", locale.get(Text::All), assignment(ALL)));
     }
-    for m in &status.outputs {
-        let reason = match m.reason.as_str() {
-            "static" => locale.get(Text::ReportStillImage),
-            "covered" => locale.get(Text::ReportCoveredByWindows),
-            "power-saver" => locale.get(Text::ReportPowerSaver),
-            "manual" => locale.get(Text::ReportPausedManually),
-            "overview" => locale.get(Text::ReportPausedInOverview),
-            _ => locale.get(Text::ReportVisible),
+    for (index, m) in status.outputs.iter().enumerate() {
+        let reason = locale.get(display_reason(&m.reason));
+        let name = if m.name.is_empty() {
+            format!("{} {}", locale.get(Text::Screen), index + 1)
+        } else {
+            m.name.clone()
         };
         lines.push(format!(
             "{} · {}×{} · {} · {}",
-            m.name,
+            name,
             m.width,
             m.height,
             reason,
