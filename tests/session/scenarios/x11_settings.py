@@ -59,9 +59,6 @@ class SettingsWindow:
     def key(self, shortcut: str) -> None:
         xdotool('key', '--clearmodifiers', shortcut)
 
-    def click(self, x: int, y: int) -> None:
-        xdotool('mousemove', '--window', self.id, str(x), str(y), 'click', '1')
-
     def capture(self, box=(0, 0, 550, 380)) -> Image.Image:
         """Capture window-relative pixels, or the full client area when box is None."""
         width, height = self.geometry()
@@ -94,7 +91,8 @@ class SettingsWindow:
                     return state
             # A mapped window can receive focus before Iced starts accepting input.
             if time.monotonic() >= next_request:
-                self.key('F12')
+                # Clearing modifiers here would also release a held mouse button.
+                xdotool('key', 'F12')
                 next_request = time.monotonic() + 1
             return None
 
@@ -123,11 +121,35 @@ class SettingsWindow:
         return round(x * sx), round(y * sy), round(w * sx), round(h * sy)
 
     def click_control(self, name, x_fraction=0.5, y_fraction=0.5):
-        x, y, width, height = self.bounds(self.control(name), name)
-        self.click(x + round(width * x_fraction), y + round(height * y_fraction))
+        def pointer_at_target(state):
+            control = state['widgets']['controls'].get(name)
+            if control is None:
+                return False
+            x, y, w, h = control
+            target_x, target_y = x + w * x_fraction, y + h * y_fraction
+            pointer = state['pointer']
+            if pointer['pressed']:
+                return False
+            if pointer['position'] is not None:
+                px, py = pointer['position']
+                if abs(px - target_x) <= 1 and abs(py - target_y) <= 1:
+                    return True
+            width, height = self.geometry()
+            px = round(target_x * width / state['size'][0])
+            py = round(target_y * height / state['size'][1])
+            xdotool('mousemove', '--window', self.id, str(px), str(py))
+            return False
+
+        self.wait(f'Iced pointer at {name}', pointer_at_target)
+        xdotool('mousedown', '1')
+        try:
+            self.wait(f'Iced to receive the press on {name}', lambda s: s['pointer']['pressed'])
+        finally:
+            xdotool('mouseup', '1')
 
     def open_settings(self):
-        self.click_control('settings')
+        self.focus()
+        self.key('ctrl+comma')
         self.wait('the theme and language pickers', lambda s: {'theme', 'language'} <= s['widgets']['controls'].keys())
 
     def focus_control(self, name):
@@ -403,9 +425,8 @@ def check_diagnostics(session: DesktopSession, window: SettingsWindow) -> None:
         window.key('shift+Tab' if reverse else 'Tab')
         window.wait(f'keyboard focus on {action}', lambda s: s['widgets']['focus'] == action)
 
-    window.open_settings()
-    window.key('ctrl+d')
-    window.focus_control('refresh')
+    window.click_control('refresh')
+    window.wait('keyboard focus on refresh', lambda s: s['widgets']['focus'] == 'refresh')
     tab_to('public', reverse=True)
     window.key('Return')
 

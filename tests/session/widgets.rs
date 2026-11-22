@@ -6,20 +6,38 @@ use iced::{
         Id, Operation, operate,
         operation::{Focusable, Outcome, Scrollable},
     },
-    event, keyboard, window,
+    event, keyboard, mouse, window,
 };
 use serde_json::{Value, json};
-use std::{any::Any, collections::BTreeMap, path::PathBuf};
+use std::{any::Any, collections::BTreeMap, path::PathBuf, sync::Mutex};
+
+#[derive(Clone, Copy, Default, serde::Serialize)]
+struct Pointer {
+    position: Option<[f32; 2]>,
+    pressed: bool,
+}
+
+static POINTER: Mutex<Pointer> = Mutex::new(Pointer {
+    position: None,
+    pressed: false,
+});
 
 pub(super) fn request(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
-    matches!(
-        event,
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            POINTER.lock().unwrap().position = Some([position.x, position.y]);
+        }
+        Event::Mouse(mouse::Event::CursorLeft) => POINTER.lock().unwrap().position = None,
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => POINTER.lock().unwrap().pressed = true,
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => POINTER.lock().unwrap().pressed = false,
+        Event::Window(window::Event::Unfocused) => *POINTER.lock().unwrap() = Pointer::default(),
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::F12),
             ..
-        })
-    )
-    .then_some(Message::InspectWidgets)
+        }) => return Some(Message::InspectWidgets),
+        _ => {}
+    }
+    None
 }
 
 struct Control(String, bool);
@@ -134,7 +152,7 @@ pub(super) fn inspect(ui: &Ui) -> Task<Message> {
         "request": request, "size": [size.width, size.height], "busy": ui.busy, "selected": ui.selected,
         "theme": ui.data.profile.theme, "language": ui.data.profile.language,
         "indicator": !ui.data.profile.hide_indicator, "login": ui.data.profile.login_enabled(),
-        "report_selection": ui.report.content.selection(),
+        "report_selection": ui.report.content.selection(), "pointer": *POINTER.lock().unwrap(),
     });
     operate(Widgets {
         clip: Rectangle::with_size(size),

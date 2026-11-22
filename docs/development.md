@@ -16,7 +16,7 @@ sudo apt install build-essential pkg-config libgtk-4-dev libgstreamer-plugins-ba
 | `make deb` | DEB with the extension bundled |
 | `make snap` | Strict core24 Snap |
 
-The Snap build uses Snapcraft when available. The Ubuntu 24.04 fallback needs snapd, squashfs-tools, Python YAML and the core24, gnome-46-2404 and mesa-2404 runtimes.
+The Snap build uses Snapcraft when available. When updating `rust-toolchain.toml`, update the Rust archive URL and SHA-256 in `snap/snapcraft.yaml`. Snapcraft uses that toolchain only during the build. The Ubuntu 24.04 fallback needs snapd, squashfs-tools, Python YAML and the core24, gnome-46-2404 and mesa-2404 runtimes.
 
 For a code change, start with the [architecture](architecture.md) and [test guide](../tests/README.md). The editor and extension share translations in `extension/locale.json`. Keep message keys and placeholders in sync across locales. Translated user guides are in `docs/readme/`.
 

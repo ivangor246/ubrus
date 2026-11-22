@@ -30,14 +30,23 @@ slots:
     bus: session
     name: org.ubrus.Ubrus
 parts:
+  rust-deps:
+    plugin: nil
+    source: https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.xz
+    source-checksum: sha256/98ee6bec240e1cfe944f17e7092412dc5ef6e008484bb668c6936d35a7d15acd
+    override-build: |
+      ./install.sh --prefix="$CRAFT_PART_INSTALL/opt/ubrus-rust" \
+        --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu --disable-ldconfig
+    prime: ['-*']
   ubrus:
     plugin: rust
     source: .
-    rust-channel: '1.100.0'
+    after: [rust-deps]
+    rust-channel: none
     build-environment:
+      - PATH: "$CRAFT_STAGE/opt/ubrus-rust/bin:$PATH"
       - CARGO_BUILD_JOBS: '1'
     build-packages:
-      - rustup
       - libgtk-4-dev
       - libgstreamer-plugins-base1.0-dev
       - libdrm-dev

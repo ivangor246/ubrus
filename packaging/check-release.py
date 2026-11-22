@@ -17,6 +17,10 @@ def check_versions(tag: str | None) -> str:
     version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
     lock = tomllib.loads(Path('Cargo.lock').read_text())
     snap = yaml.safe_load(Path('snap/snapcraft.yaml').read_text())
+    rust_version = tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+    archive = Path(snap['parts']['rust-deps']['source']).name
+    if archive != f'rust-{rust_version}-x86_64-unknown-linux-gnu.tar.xz':
+        raise SystemExit(f'Snap toolchain {archive} does not match Rust {rust_version} for amd64')
     component = ET.parse('packaging/desktop/org.ubrus.Ubrus.metainfo.xml')
     releases = component.findall('releases/release')
     sources = {
